@@ -1471,42 +1471,9 @@ pub fn create_folder_in(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
 
 impl Widget for &mut FileTree {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let block_style = if self.focused {
-            Style::default().fg(self.theme.ui(Color::Rgb(0x4e, 0x9a, 0xff)))
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        // Black theme: chipless brand header (panelTitle.activeForeground);
-        // Croft Dark keeps the historical white-on-navy chip.
-        let title = if self.focus_gradient {
-            Span::styled(
-                " EXPLORER ",
-                Style::default()
-                    .fg(crate::gradient::rgb_color(crate::gradient::PANEL_TITLE_FG))
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled(
-                " EXPLORER ",
-                Style::default()
-                    .fg(self.theme.ui(Color::White))
-                    .bg(self.theme.ui(Color::Rgb(0x1e, 0x3a, 0x6e)))
-                    .add_modifier(Modifier::BOLD),
-            )
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(block_style)
-            .title(title.clone());
-        let inner = block.inner(area);
-        block.render(area, buf);
-        // Black theme: replace the solid focus border with the orange→green
-        // gradient (matching the welcome activity box), then re-stamp the
-        // title the gradient top edge just overwrote.
-        if self.focused && self.focus_gradient {
-            crate::gradient::paint_gradient_box(buf, area);
-            buf.set_span(area.x + 1, area.y, &title, title.width() as u16);
-        }
+        // Borderless sidebar (croft-tmux-monokai patch): no box outline and no
+        // EXPLORER title row, so the full area is tree content.
+        let inner = area;
         // The New File / New Folder / Refresh / Collapse toolbar is painted
         // later, on the root folder row. The "Views and More Actions" (⋯)
         // button sits here on the EXPLORER title line, mirroring VS Code's
@@ -1521,24 +1488,8 @@ impl Widget for &mut FileTree {
         self.last_scrollbar = Rect::default();
         self.sticky_rows.clear();
 
-        // Paint the ⋯ button at the right end of the title border row. It is
-        // always available (not focus-gated) so the view-toggle menu is one
-        // click away even when the tree is unfocused, like VS Code. It wears
-        // the shared header-action pill — a space-padded `" ⋯ "` inset one cell
-        // from the rounded corner — so it matches the terminal `+` button
-        // exactly instead of jamming a naked glyph against the corner.
-        if area.width > 12
-            && let Some(rect) = crate::widgets::header_pill::render_action(
-                buf,
-                area.x + area.width - 1,
-                area.y,
-                crate::widgets::header_pill::MORE_LABEL,
-                self.theme,
-                self.hover_pointer,
-            )
-        {
-            self.header_views_btn = rect;
-        }
+        // The EXPLORER title (and its ⋯ views button) is removed with the
+        // border; the view toggles stay reachable from the palette/settings.
 
         self.last_inner = inner;
 
