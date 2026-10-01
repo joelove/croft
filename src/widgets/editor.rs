@@ -8095,6 +8095,129 @@ impl Editor {
             .collect()
     }
 
+    /// Move the caret to the first line (Sublime/Atom `Cmd+Up`).
+    pub fn move_to_first_line(&mut self) {
+        if !self.lines.is_empty() {
+            self.goto_line(1);
+        }
+    }
+
+    /// Move the caret to the last line (Sublime/Atom `Cmd+Down`).
+    pub fn move_to_last_line(&mut self) {
+        if !self.lines.is_empty() {
+            self.goto_line(self.lines.len());
+        }
+    }
+
+    /// Select the word under the caret (Sublime/Atom `Ctrl+Shift+W`).
+    pub fn select_word_under_cursor(&mut self) {
+        if self.lines.is_empty() {
+            self.selection = None;
+            return;
+        }
+        let r = self.cursor_row.min(self.lines.len() - 1);
+        let chars: Vec<char> = self.lines[r].chars().collect();
+        let c = self.cursor_col.min(chars.len());
+        let pivot = if c < chars.len() && is_word_char(chars[c]) {
+            Some(c)
+        } else if c > 0 && is_word_char(chars[c - 1]) {
+            Some(c - 1)
+        } else {
+            None
+        };
+        let Some(p) = pivot else {
+            self.selection = None;
+            return;
+        };
+        let mut start = p;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = p + 1;
+        while end < chars.len() && is_word_char(chars[end]) {
+            end += 1;
+        }
+        self.selection = Some(EditorSelection {
+            anchor: (r, start),
+            head: (r, end),
+        });
+        self.cursor_row = r;
+        self.cursor_col = end;
+    }
+
+    /// Grow the selection to whole lines (Sublime `Cmd+L`).
+    pub fn expand_selection_to_line(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        let (first, last) = self
+            .selection_rows()
+            .unwrap_or((self.cursor_row, self.cursor_row));
+        let last_col = self.line_char_len(last);
+        self.selection = Some(EditorSelection {
+            anchor: (first, 0),
+            head: (last, last_col),
+        });
+        self.cursor_row = last;
+        self.cursor_col = last_col;
+    }
+
+    /// Delete the word before the caret (Sublime/Atom `Alt+Backspace`).
+    pub fn delete_word_left(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.pin_on_edit();
+        self.push_undo(EditKind::Backspace);
+        self.selection = Some(EditorSelection::new(self.cursor_row, self.cursor_col));
+        self.move_word_left();
+        self.extend_selection_to_cursor();
+        self.backspace_raw();
+        self.recompute_highlights();
+    }
+
+    /// Delete the word after the caret (Sublime/Atom `Alt+Delete`).
+    pub fn delete_word_right(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.pin_on_edit();
+        self.push_undo(EditKind::DeleteForward);
+        self.selection = Some(EditorSelection::new(self.cursor_row, self.cursor_col));
+        self.move_word_right();
+        self.extend_selection_to_cursor();
+        self.delete_forward_raw();
+        self.recompute_highlights();
+    }
+
+    /// Delete from the caret to the start of the line (Atom `Cmd+Backspace`).
+    pub fn delete_to_line_start(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.pin_on_edit();
+        self.push_undo(EditKind::Backspace);
+        self.selection = Some(EditorSelection::new(self.cursor_row, self.cursor_col));
+        self.home_line();
+        self.extend_selection_to_cursor();
+        self.backspace_raw();
+        self.recompute_highlights();
+    }
+
+    /// Delete from the caret to the end of the line (Atom `Cmd+Delete`).
+    pub fn delete_to_line_end(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.pin_on_edit();
+        self.push_undo(EditKind::DeleteForward);
+        self.selection = Some(EditorSelection::new(self.cursor_row, self.cursor_col));
+        self.end_line();
+        self.extend_selection_to_cursor();
+        self.delete_forward_raw();
+        self.recompute_highlights();
+    }
+
     pub fn select_all(&mut self) {
         if self.lines.is_empty() {
             self.selection = None;
@@ -13043,22 +13166,9 @@ fn build_line_spans<'a>(line: &'a str, spans: &[HiSpan]) -> Vec<Span<'a>> {
 impl Widget for &mut Editor {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.clamp_to_symbol_view();
-        let block_style = if self.focused {
-            Style::default().fg(self.theme.ui(Color::Rgb(0x4e, 0x9a, 0xff)))
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(block_style);
-        let mut inner = block.inner(area);
-        block.render(area, buf);
-        // Black theme: replace the solid focus border with the orange→green
-        // gradient that matches the welcome activity box. The editor has no
-        // title, so nothing needs re-stamping over the gradient top edge.
-        if self.focused && self.focus_gradient {
-            crate::gradient::paint_gradient_box(buf, area);
-        }
+        // Borderless editor (croft-tmux-monokai patch): no box outline or focus
+        // gradient, so the full area is code.
+        let mut inner = area;
         self.last_area = area;
         self.last_inner = inner;
         self.last_scrollbar = Rect::default();
@@ -14375,9 +14485,9 @@ impl Widget for &mut Editor {
             }
 
             // The cursor itself is drawn by the host terminal as a hardware
-            // caret (DECSCUSR `BlinkingBar`); App calls
-            // `frame.set_cursor_position(...)` so the blink/overlay never
-            // hides the underlying character.
+            // caret (DECSCUSR `SteadyBlock`, blinked in software); App calls
+            // `frame.set_cursor_position(...)` so the overlay never changes the
+            // buffer cell under the caret.
         }
 
         // Ghost caret name tags (VS Code Live Share): while a peer's caret is
@@ -16093,6 +16203,25 @@ impl EditorTabs {
         }
     }
 
+    /// Open a new empty (untitled) tab after the active one, VS Code's `Cmd+N`.
+    /// The buffer has no path, so saving it prompts for one.
+    pub fn new_empty_tab(&mut self) {
+        let active = self.active;
+        let mut e = Editor::new();
+        e.focused = self.editors[active].focused;
+        e.theme = self.editors[active].theme;
+        e.focus_gradient = self.editors[active].focus_gradient;
+        e.search_highlight = self.search_highlight_term.clone();
+        e.search_highlight_opts = self.search_highlight_opts;
+        let pos = active + 1;
+        self.editors.insert(pos, e);
+        self.editors[active].focused = false;
+        self.active = pos;
+        for (i, ed) in self.editors.iter_mut().enumerate() {
+            ed.focused = i == self.active;
+        }
+    }
+
     /// VS Code "preview tab" semantics: open `path` in the single
     /// replaceable preview slot. If the file is already in some tab, just
     /// switch to it. Otherwise reuse the existing preview slot, or create a
@@ -16521,11 +16650,14 @@ impl Widget for &mut EditorTabs {
             }
             return;
         }
-        let strip_h: u16 = 1;
+        // Tabless editor (croft-tmux-monokai patch): zero-height tab strip so
+        // the editor body gets the whole pane. Files are switched with Go to
+        // File (and Cmd+T is rebound to it), so the strip is not needed.
+        let strip_h: u16 = 0;
         let strip = Rect {
             x: area.x,
             y: area.y,
-            width: area.width,
+            width: 0,
             height: strip_h,
         };
         let mut body = Rect {
@@ -16553,7 +16685,7 @@ impl Widget for &mut EditorTabs {
             buf[(x, strip.y)].set_symbol(" ");
         }
 
-        self.tab_strip_y = strip.y;
+        self.tab_strip_y = if strip_h > 0 { strip.y } else { u16::MAX };
         self.tab_screen_ranges.clear();
         self.tab_close_x.clear();
         let mut cursor_x = strip.x;
@@ -24087,7 +24219,7 @@ mod tests {
 
     #[test]
     fn render_never_replaces_character_at_cursor() {
-        // The hardware caret (DECSCUSR BlinkingBar) overlays the cell at the
+        // The hardware caret (DECSCUSR SteadyBlock) sits on the cell at the
         // cursor position; the editor's own render must NEVER change the
         // symbol there or the blink would visibly swallow the letter.
         use ratatui::buffer::Buffer;

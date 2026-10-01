@@ -5475,7 +5475,10 @@ impl App {
             },
             focus: Pane::Tree,
             show_tree: true,
-            show_terminal: true,
+            // The dev-workspace lives in tmux, which already owns panes and a
+            // bottom row; croft's internal panel starts hidden (Ctrl+J shows
+            // it). Patch: croft-tmux-monokai.
+            show_terminal: false,
             terminal_maximized: false,
             activity_bar_visible: layout_prefs.activity_bar,
             status_bar_visible: layout_prefs.status_bar,
@@ -14193,11 +14196,10 @@ impl App {
         // inside is filled in one pass. The welcome content then renders
         // into `block.inner(outer_area)` so a tall recents list can never
         // paint over the border rows.
-        let outer_block = ratatui::widgets::Block::default()
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .style(bg);
-        let area = outer_block.inner(outer_area);
+        // Borderless welcome (croft-tmux-monokai patch): fill the pane but draw
+        // no box outline; every croft pane is borderless now.
+        let outer_block = ratatui::widgets::Block::default().style(bg);
+        let area = outer_area;
         frame.render_widget(outer_block, outer_area);
         if area.width == 0 || area.height == 0 {
             return;
@@ -14205,9 +14207,9 @@ impl App {
         // Layout-control icons at the welcome screen's top-right, inside the
         // border row — same controls as the editor tab strip (placement A).
         let icon_row = Rect {
-            x: outer_area.x + 1,
+            x: outer_area.x,
             y: outer_area.y,
-            width: outer_area.width.saturating_sub(2),
+            width: outer_area.width,
             height: 1,
         };
         self.paint_layout_icons(frame, icon_row);
@@ -19372,8 +19374,8 @@ impl App {
 
         // Show the host terminal's hardware caret only when the editor is
         // focused and has no modal overlay. The DECSCUSR style is set to
-        // BlinkingBar at startup, so the terminal blinks a thin vertical
-        // line over the cursor cell without replacing its character.
+        // SteadyBlock at startup, so the terminal draws a square block over
+        // the cursor cell; croft's software blink hides it on the off phase.
         if self.focus == Pane::Editor
             && self.context_menu.is_none()
             && self.prompt.is_none()
@@ -20763,6 +20765,17 @@ impl App {
         let plain = !key.modifiers.contains(KeyModifiers::ALT);
         let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
+            // Cmd+K Cmd+Left/Right: focus the left/right editor group
+            // (Sublime's focus_neighboring_group). Relocated off Cmd+Alt+Left/Right
+            // so those can select by word.
+            KeyCode::Left if plain => {
+                self.focus_editor_group(true);
+                true
+            }
+            KeyCode::Right if plain => {
+                self.focus_editor_group(false);
+                true
+            }
             // Cmd+K N in the editor: leave a sticky note on this line (#367).
             // In a terminal the same chord keeps its meaning (below).
             KeyCode::Char(c)
@@ -21272,6 +21285,24 @@ impl App {
     /// built-in defaults call their app methods directly, so a command-level
     /// recorder would miss most of what a user does.
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // tmux has no Super modifier: it maps the kitty/CSI-u super bit onto
+        // Meta (src/tty-keys.c), so while croft runs inside tmux every macOS
+        // Cmd chord arrives as Alt. Promote Alt to Super there so the VS Code
+        // Cmd keybindings work. tmux cannot tell Cmd from Alt apart, so the few
+        // genuine Alt chords fold onto their Cmd counterparts.
+        #[cfg(target_os = "macos")]
+        let key = if std::env::var_os("TMUX").is_some()
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && !key.modifiers.contains(KeyModifiers::SUPER)
+            && !alt_is_croft_chord(key)
+        {
+            let mut mods = key.modifiers;
+            mods.remove(KeyModifiers::ALT);
+            mods.insert(KeyModifiers::SUPER);
+            KeyEvent::new(key.code, mods)
+        } else {
+            key
+        };
         // Esc dismisses an open ssh-pane offer (#364) without being consumed:
         // the offer is a status-bar hint, not a modal, so whatever Esc meant
         // to the focused pane still happens.
@@ -47471,6 +47502,82 @@ impl App {
                 }
             }
             Cmd::ReopenClosedEditor => self.reopen_closed_tab(),
+            Cmd::NewFile => {
+                self.editor.new_empty_tab();
+                self.status = String::from("New file");
+            }
+            Cmd::CursorLineStart => {
+                self.editor.clear_selection();
+                self.editor.home_line();
+            }
+            Cmd::CursorLineEnd => {
+                self.editor.clear_selection();
+                self.editor.end_line();
+            }
+            Cmd::CursorLineStartSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.home_line();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::CursorLineEndSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.end_line();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::CursorWordStartLeft => {
+                self.editor.clear_selection();
+                self.editor.move_word_left();
+            }
+            Cmd::CursorWordEndRight => {
+                self.editor.clear_selection();
+                self.editor.move_word_right();
+            }
+            Cmd::CursorWordStartLeftSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.move_word_left();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::CursorWordEndRightSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.move_word_right();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::CursorTop => {
+                self.editor.clear_selection();
+                self.editor.move_to_first_line();
+            }
+            Cmd::CursorBottom => {
+                self.editor.clear_selection();
+                self.editor.move_to_last_line();
+            }
+            Cmd::CursorTopSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.move_to_first_line();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::CursorBottomSelect => {
+                if self.editor.selection.is_none() {
+                    self.editor.start_selection_at_cursor();
+                }
+                self.editor.move_to_last_line();
+                self.editor.extend_selection_to_cursor();
+            }
+            Cmd::SelectWord => self.editor.select_word_under_cursor(),
+            Cmd::ExpandSelectionToLine => self.editor.expand_selection_to_line(),
+            Cmd::DeleteWordLeft => self.editor.delete_word_left(),
+            Cmd::DeleteWordRight => self.editor.delete_word_right(),
+            Cmd::DeleteLineStart => self.editor.delete_to_line_start(),
+            Cmd::DeleteLineEnd => self.editor.delete_to_line_end(),
             Cmd::SplitEditor => self.split_editor(),
             Cmd::QuickOpen => self.open_file_finder(),
             Cmd::TakeTheTour => self.start_demo(),
@@ -62036,7 +62143,7 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
 }
 
 /// The terminal modes croft turns on whenever it takes over a screen: alt
-/// screen, mouse tracking, bracketed paste, steady-bar cursor. SINGLE SOURCE
+/// screen, mouse tracking, bracketed paste, steady-block cursor. SINGLE SOURCE
 /// OF TRUTH — the startup takeover, the post-scp TUI restore, and the
 /// dtach-reattach re-assert all emit exactly this block, so the mode lists
 /// can never drift apart. A mode enabled at startup but missing from the
@@ -62052,7 +62159,7 @@ fn takeover_mode_seq() -> Vec<u8> {
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste,
-        crossterm::cursor::SetCursorStyle::SteadyBar,
+        crossterm::cursor::SetCursorStyle::SteadyBlock,
     );
     seq
 }
@@ -63346,6 +63453,23 @@ fn is_cmd_alt_shift_letter(key: KeyEvent, letter: char) -> bool {
     let has_cmd_or_ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
         || key.modifiers.contains(KeyModifiers::SUPER);
     has_shift && has_alt && has_cmd_or_ctrl
+}
+
+/// True for the Alt chords croft owns itself (word motion, move/copy line,
+/// delete word, word select). tmux collapses Cmd onto Alt, so the promotion
+/// that recovers Cmd from Alt must leave these alone; their Cmd counterparts
+/// are routed through the tmux `croft` key table instead (see `.tmux.conf`).
+fn alt_is_croft_chord(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(
+            key.code,
+            KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Backspace
+                | KeyCode::Delete
+        )
 }
 
 /// `Cmd+Opt+Left`: move keyboard focus to the LEFT editor group while
@@ -66411,11 +66535,11 @@ pub fn run(
         app.sixel_supported = crate::iterm2_inline::probe_sixel_support();
     }
     let mut out = stdout();
-    // Alt screen + mouse + bracketed paste + SteadyBar cursor (thin vertical
-    // line, no hardware blink: the blink is done in software so it works even
-    // when the host terminal's own "Blinking cursor" preference is off). The
-    // shared takeover block keeps this list identical to the dtach-reattach
-    // re-assert; add new modes in takeover_mode_seq, not here.
+    // Alt screen + mouse + bracketed paste + SteadyBlock cursor (a square, no
+    // hardware blink: the blink is done in software so it works even when the
+    // host terminal's own "Blinking cursor" preference is off). The shared
+    // takeover block keeps this list identical to the dtach-reattach re-assert;
+    // add new modes in takeover_mode_seq, not here.
     {
         use std::io::Write;
         out.write_all(&takeover_mode_seq())
