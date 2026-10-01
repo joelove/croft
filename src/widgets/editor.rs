@@ -14485,9 +14485,9 @@ impl Widget for &mut Editor {
             }
 
             // The cursor itself is drawn by the host terminal as a hardware
-            // caret (DECSCUSR `BlinkingBar`); App calls
-            // `frame.set_cursor_position(...)` so the blink/overlay never
-            // hides the underlying character.
+            // caret (DECSCUSR `SteadyBlock`, blinked in software); App calls
+            // `frame.set_cursor_position(...)` so the overlay never changes the
+            // buffer cell under the caret.
         }
 
         // Ghost caret name tags (VS Code Live Share): while a peer's caret is
@@ -24219,7 +24219,7 @@ mod tests {
 
     #[test]
     fn render_never_replaces_character_at_cursor() {
-        // The hardware caret (DECSCUSR BlinkingBar) overlays the cell at the
+        // The hardware caret (DECSCUSR SteadyBlock) sits on the cell at the
         // cursor position; the editor's own render must NEVER change the
         // symbol there or the blink would visibly swallow the letter.
         use ratatui::buffer::Buffer;

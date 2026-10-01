@@ -19359,8 +19359,8 @@ impl App {
 
         // Show the host terminal's hardware caret only when the editor is
         // focused and has no modal overlay. The DECSCUSR style is set to
-        // BlinkingBar at startup, so the terminal blinks a thin vertical
-        // line over the cursor cell without replacing its character.
+        // SteadyBlock at startup, so the terminal draws a square block over
+        // the cursor cell; croft's software blink hides it on the off phase.
         if self.focus == Pane::Editor
             && self.context_menu.is_none()
             && self.prompt.is_none()
@@ -61450,7 +61450,7 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
 }
 
 /// The terminal modes croft turns on whenever it takes over a screen: alt
-/// screen, mouse tracking, bracketed paste, steady-bar cursor. SINGLE SOURCE
+/// screen, mouse tracking, bracketed paste, steady-block cursor. SINGLE SOURCE
 /// OF TRUTH — the startup takeover, the post-scp TUI restore, and the
 /// dtach-reattach re-assert all emit exactly this block, so the mode lists
 /// can never drift apart. A mode enabled at startup but missing from the
@@ -61466,7 +61466,7 @@ fn takeover_mode_seq() -> Vec<u8> {
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste,
-        crossterm::cursor::SetCursorStyle::SteadyBar,
+        crossterm::cursor::SetCursorStyle::SteadyBlock,
     );
     seq
 }
@@ -65826,11 +65826,11 @@ pub fn run(
         app.sixel_supported = crate::iterm2_inline::probe_sixel_support();
     }
     let mut out = stdout();
-    // Alt screen + mouse + bracketed paste + SteadyBar cursor (thin vertical
-    // line, no hardware blink: the blink is done in software so it works even
-    // when the host terminal's own "Blinking cursor" preference is off). The
-    // shared takeover block keeps this list identical to the dtach-reattach
-    // re-assert; add new modes in takeover_mode_seq, not here.
+    // Alt screen + mouse + bracketed paste + SteadyBlock cursor (a square, no
+    // hardware blink: the blink is done in software so it works even when the
+    // host terminal's own "Blinking cursor" preference is off). The shared
+    // takeover block keeps this list identical to the dtach-reattach re-assert;
+    // add new modes in takeover_mode_seq, not here.
     {
         use std::io::Write;
         out.write_all(&takeover_mode_seq())
