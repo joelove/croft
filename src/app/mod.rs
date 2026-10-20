@@ -4795,7 +4795,7 @@ const EDITOR_SPLIT_MIN: u16 = 10;
 /// Maximum pinned sticky-scroll header rows (VS Code's default is 5).
 const STICKY_SCROLL_MAX: usize = 5;
 
-const SIDEBAR_WIDTH_DEFAULT: u16 = 64;
+const SIDEBAR_WIDTH_DEFAULT: u16 = 32;
 const SIDEBAR_WIDTH_MIN: u16 = 12;
 const TERMINAL_HEIGHT_MIN: u16 = 3;
 const EDITOR_HEIGHT_MIN: u16 = 3;

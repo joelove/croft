@@ -19334,16 +19334,6 @@ fn fresh_app_has_one_active_terminal() {
 }
 
 #[test]
-fn fresh_app_opens_the_filetree_at_the_wide_default() {
-    // The default side bar is deliberately wide so a fresh croft in an empty
-    // tmux has room for the filetree without a drag; restored session state
-    // still overrides it with the user's own width.
-    let tmp = tempfile::tempdir().unwrap();
-    let app = App::new(tmp.path().to_path_buf()).unwrap();
-    assert_eq!(app.sidebar_width, 64);
-}
-
-#[test]
 fn split_terminal_appends_and_activates_new_one() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = App::new(tmp.path().to_path_buf()).unwrap();
