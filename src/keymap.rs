@@ -56,6 +56,13 @@ impl Chord {
                 KeyCode::Char(c.to_ascii_lowercase())
             }
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
+            // crossterm reports Shift+Tab as its own `BackTab` code, so a
+            // `ctrl+shift+tab` binding would never match the event without
+            // folding it back into Tab + SHIFT (croft-tmux-monokai patch).
+            KeyCode::BackTab => {
+                m |= KeyModifiers::SHIFT;
+                KeyCode::Tab
+            }
             other => other,
         };
         Self { code, mods: m }
@@ -1182,6 +1189,19 @@ mod tests {
             Chord::parse("cmd+enter").unwrap(),
             Chord::from_event(ev(KeyCode::Enter, KeyModifiers::SUPER))
         );
+    }
+
+    #[test]
+    fn backtab_event_folds_to_shift_tab_so_a_ctrl_shift_tab_binding_matches() {
+        // Crossterm decodes Ctrl+Shift+Tab as BackTab, so the binding written
+        // as `ctrl+shift+tab` must match the live event (croft-tmux-monokai
+        // patch).
+        let bound = Chord::parse("ctrl+shift+tab").unwrap();
+        let live = Chord::from_event(ev(
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(bound, live);
     }
 
     #[test]

@@ -162,6 +162,83 @@ pub fn resolve(cwd: &Path, arg: &Path) -> PathBuf {
     }
 }
 
+/// The socket a `croft view` / `croft edit` client should talk to.
+///
+/// The pane's own `CROFT_VIEW_SOCK` wins. Under tmux that variable is absent
+/// from the panes croft did not spawn (the dev-workspace review pane, the
+/// bottom shells): their parent is the tmux server, not croft, so croft's
+/// spawn-time export never reaches them. Asking tmux for the value croft
+/// published into the session environment covers those panes live, including
+/// ones that were already running when croft started.
+pub fn socket_from_env_or_tmux() -> Option<PathBuf> {
+    if let Some(socket) = std::env::var_os(SOCK_ENV).filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(socket));
+    }
+    tmux_socket()
+}
+
+/// Read `CROFT_VIEW_SOCK` back out of this tmux session's environment.
+///
+/// `tmux show-environment <name>` prints `NAME=value` on success and exits
+/// non-zero when the name is unset, so both the status and the `NAME=` prefix
+/// are load-bearing: a partial match must never be mistaken for a socket.
+fn tmux_socket() -> Option<PathBuf> {
+    if std::env::var_os("TMUX").is_none() {
+        return None;
+    }
+    let out = std::process::Command::new("tmux")
+        .args(["show-environment", SOCK_ENV])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_show_environment(&stdout)
+}
+
+/// Parse `tmux show-environment CROFT_VIEW_SOCK` output: `NAME=value`, or
+/// `-NAME` for a variable tmux marks for removal. Anything else, including an
+/// empty value, is not a socket.
+fn parse_show_environment(stdout: &str) -> Option<PathBuf> {
+    let value = stdout.trim().strip_prefix(SOCK_ENV)?.strip_prefix('=')?;
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+/// Publish this croft's view socket into the tmux session environment, so
+/// sibling panes can run `croft view` / `croft edit` (#362).
+///
+/// Session-scoped rather than global (`-g`): the value names the croft hosting
+/// THIS session's editor pane, and the agent session next door has no croft to
+/// reach. A no-op outside tmux, and best-effort inside it, since a croft that
+/// cannot run `tmux` still offers `croft view` to its own panes.
+pub fn publish_to_tmux(socket: &Path) -> bool {
+    if std::env::var_os("TMUX").is_none() {
+        return false;
+    }
+    std::process::Command::new("tmux")
+        .args(["set-environment", SOCK_ENV])
+        .arg(socket)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Undo [`publish_to_tmux`] on the way out. Best effort: a croft that is
+/// exiting has nothing to say about a failure, and a stale value is recoverable
+/// (the client reports the dead socket) unlike the wrong window.
+pub fn unpublish_from_tmux() {
+    if std::env::var_os("TMUX").is_none() {
+        return;
+    }
+    let _ = std::process::Command::new("tmux")
+        .args(["set-environment", "-u", SOCK_ENV])
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// Send one request and wait for the reply, both bounded by a deadline.
 ///
 /// A croft wedged mid-frame must not hang the user's shell forever: a shell
@@ -665,7 +742,7 @@ pub fn edit(target: &std::ffi::OsStr, wait: bool, cache_dir: &Path) -> anyhow::R
     if !wait {
         return Ok(());
     }
-    let Some(socket) = std::env::var_os(SOCK_ENV).filter(|s| !s.is_empty()) else {
+    let Some(socket) = socket_from_env_or_tmux() else {
         return Ok(());
     };
     let path = resolve(&std::env::current_dir()?, Path::new(target));
@@ -716,8 +793,8 @@ pub fn run(
     as_hint: Option<&str>,
     cache_dir: &Path,
 ) -> anyhow::Result<()> {
-    let socket = match std::env::var_os(SOCK_ENV).filter(|s| !s.is_empty()) {
-        Some(s) => PathBuf::from(s),
+    let socket = match socket_from_env_or_tmux() {
+        Some(s) => s,
         None => anyhow::bail!(
             "croft view needs a croft to view in: run it from a pane inside croft ({SOCK_ENV} is unset)"
         ),
@@ -1330,6 +1407,21 @@ mod tests {
             }
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn tmux_show_environment_parses_only_a_real_value() {
+        assert_eq!(
+            parse_show_environment("CROFT_VIEW_SOCK=/tmp/view-1-abc.sock\n"),
+            Some(PathBuf::from("/tmp/view-1-abc.sock"))
+        );
+        // An unset variable exits non-zero and prints nothing; a marked-for
+        // removal one prints `-NAME`. Neither is a socket, and neither may be
+        // mistaken for the empty path.
+        assert_eq!(parse_show_environment(""), None);
+        assert_eq!(parse_show_environment("-CROFT_VIEW_SOCK\n"), None);
+        assert_eq!(parse_show_environment("CROFT_VIEW_SOCK=\n"), None);
+        assert_eq!(parse_show_environment("OTHER=/tmp/x.sock\n"), None);
     }
 
     #[test]

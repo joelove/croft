@@ -15976,6 +15976,48 @@ impl App {
         }
     }
 
+    /// Ctrl+Tab / Ctrl+Shift+Tab (croft-tmux-monokai patch): open the "Go to
+    /// Tab" picker with the next (or previous) tab selected. The tab strip is
+    /// hidden in this fork, so the picker is how the open tabs stay visible;
+    /// pressing the chord again while it is open walks the list.
+    fn open_tab_picker(&mut self, delta: isize) {
+        use crate::widgets::list_picker::{ListPicker, ListPurpose, ListRow};
+        let count = self.editor.tab_count();
+        if count == 0 {
+            self.status = String::from("No tabs to choose");
+            return;
+        }
+        let rows: Vec<ListRow> = self
+            .editor
+            .tab_display_labels()
+            .into_iter()
+            .enumerate()
+            .map(|(i, label)| ListRow {
+                id: i.to_string(),
+                label,
+            })
+            .collect();
+        let current = self.editor.active_index() as isize;
+        let start = (current + delta).rem_euclid(count as isize) as usize;
+        let mut picker = ListPicker::new(ListPurpose::GoToTab, "Go to Tab", rows);
+        picker.selected = start.min(picker.visible_count().saturating_sub(1));
+        self.open_list_picker(picker, "No tabs to choose");
+    }
+
+    /// Move the Go to Tab picker's selection by `delta`, wrapping, so a held
+    /// Ctrl and repeated Tab keep walking the list.
+    fn move_tab_picker(&mut self, delta: isize) {
+        let Some(picker) = self.list_picker.as_mut() else {
+            return;
+        };
+        let count = picker.visible_count();
+        if count == 0 {
+            return;
+        }
+        let current = picker.selected as isize;
+        picker.selected = (current + delta).rem_euclid(count as isize) as usize;
+    }
+
     /// Cmd+K ⇧W: reopen the most recently closed editor tab (VS Code
     /// "Reopen Closed Editor"), restoring its pin state, cursor, and
     /// scroll. Entries whose file has vanished since the close are skipped,
@@ -33968,6 +34010,13 @@ impl App {
         self.close_list_picker();
         let index = row.id.parse::<usize>().unwrap_or(0);
         match purpose {
+            ListPurpose::GoToTab => {
+                if self.editor.select(index) {
+                    self.sync_open_file_poll_mtime();
+                    self.focus_pane(Pane::Editor);
+                    self.status = format!("Tab {}", index + 1);
+                }
+            }
             ListPurpose::AgentLaneFile => {
                 if let Some((agent, path)) = self.pending_lane_picks.get(index).cloned() {
                     self.diff_agent_lane_row(&agent, &path);
@@ -42777,7 +42826,11 @@ impl App {
         // the MCP index refresh and the FS watcher all running, which is
         // exactly the condition `src/gui_path.rs` and `src/session.rs` both
         // document when they place their own `set_var` calls at startup.
-        let _ = crate::view_ipc::SOCK_PATH.set(path);
+        let _ = crate::view_ipc::SOCK_PATH.set(path.clone());
+        // Publish the same path into the tmux session environment so the
+        // panes croft did not spawn (review pane, bottom shells) can reach it
+        // too; a no-op outside tmux (#362, croft-tmux-monokai patch).
+        crate::view_ipc::publish_to_tmux(&path);
         Some(listener)
     }
 
@@ -46826,6 +46879,8 @@ impl App {
                 self.editor.new_empty_tab();
                 self.status = String::from("New file");
             }
+            Cmd::NextTab => self.open_tab_picker(1),
+            Cmd::PreviousTab => self.open_tab_picker(-1),
             Cmd::CursorLineStart => {
                 self.editor.clear_selection();
                 self.editor.home_line();
@@ -48156,6 +48211,20 @@ impl App {
     }
 
     fn handle_list_picker_key(&mut self, key: KeyEvent) {
+        // Ctrl+Tab / Ctrl+Shift+Tab walk the Go to Tab picker without closing
+        // it, so holding Ctrl and tapping Tab keeps moving the highlight.
+        if self
+            .list_picker
+            .as_ref()
+            .is_some_and(|p| p.purpose == crate::widgets::list_picker::ListPurpose::GoToTab)
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+        {
+            let backward = matches!(key.code, KeyCode::BackTab)
+                || key.modifiers.contains(KeyModifiers::SHIFT);
+            self.move_tab_picker(if backward { -1 } else { 1 });
+            return;
+        }
         let Some(picker) = self.list_picker.as_mut() else {
             return;
         };
@@ -62776,6 +62845,10 @@ fn alt_is_croft_chord(key: KeyEvent) -> bool {
                 | KeyCode::Down
                 | KeyCode::Backspace
                 | KeyCode::Delete
+                // Ctrl+Alt+Tab / Ctrl+Alt+Shift+Tab (Go to Tab) must reach the
+                // keymap as-is instead of being rewritten to Ctrl+Super.
+                | KeyCode::Tab
+                | KeyCode::BackTab
         )
 }
 
@@ -65936,6 +66009,11 @@ pub fn run(
     // disabled, pilot death): those threads race process exit, and a thread
     // that dies mid-grace-kill leaves the claude child running.
     crate::pair_host::join_teardowns();
+
+    // The published socket names THIS croft: clear the session value on the way
+    // out so a later `croft view` from a sibling pane reports an absent croft
+    // rather than dialing a dead path (croft-tmux-monokai patch).
+    crate::view_ipc::unpublish_from_tmux();
 
     result?;
     if app.drop_to_local {

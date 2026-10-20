@@ -37,6 +37,24 @@ pub const HIGHLIGHT_NAMES: &[&str] = &[
     "variable",
     "variable.builtin",
     "variable.parameter",
+    // Aliases for finer-grained captures that bundled grammars emit but the
+    // original set omitted; without these the captures were silently dropped
+    // and the tokens fell through to the default foreground.
+    "conditional",
+    "field",
+    "float",
+    "function.call",
+    "keyword.operator",
+    "parameter",
+    "storageclass",
+    "type.qualifier",
+    // Markdown (block and inline grammars).
+    "text.title",
+    "text.literal",
+    "text.uri",
+    "text.reference",
+    "text.emphasis",
+    "text.strong",
 ];
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -364,6 +382,153 @@ const DBSCHEME_HIGHLIGHTS_QUERY: &str = r##"
 ["," ":" ";" "." "|" "="] @punctuation.delimiter
 "##;
 
+/// Highlights for Terraform/HCL files (`.tf`/`.hcl`/`.tfvars`/`.tftpl`).
+/// `tree-sitter-hcl` 1.1.0 ships no highlights query in the crate package, so
+/// croft carries this one: adapted from Helix's HCL query and rewritten onto
+/// croft's own capture vocabulary (`keyword.control.*`, `variable.other.member`,
+/// `constant.numeric`, `constant.builtin.boolean` -> the names in
+/// `HIGHLIGHT_NAMES`) so nothing is dropped.
+const HCL_HIGHLIGHTS_QUERY: &str = r#"
+[
+  "if"
+  "else"
+  "endif"
+  "for"
+  "endfor"
+  "in"
+] @keyword
+
+[
+  ":"
+  "="
+] @operator
+
+[
+  (ellipsis)
+  "?"
+  "=>"
+] @punctuation.special
+
+[
+  "."
+  ".*"
+  ","
+  "[*]"
+] @punctuation.delimiter
+
+[
+  "{"
+  "}"
+  "["
+  "]"
+  "("
+  ")"
+] @punctuation.bracket
+
+[
+  "!"
+  "*"
+  "/"
+  "%"
+  "+"
+  "-"
+  ">"
+  ">="
+  "<"
+  "<="
+  "=="
+  "!="
+  "&&"
+  "||"
+] @operator
+
+(identifier) @variable
+
+; Block type names (resource, data, ...). Placed before the keyword predicate
+; below so a known Terraform block keyword wins under last-match-wins; an
+; unrecognised block name still reads as a type.
+(block (identifier) @type.builtin)
+
+; { key: val }
+(object_elem val: (expression
+  (variable_expr
+      (identifier) @type.builtin (#match? @type.builtin "^(bool|string|number|object|tuple|list|map|set|any)$"))))
+
+; Member access: the attribute of a traversal (obj.field). Before the builtin
+; get_attr rule so path.root / path.module stay @variable.builtin.
+(get_attr (identifier) @property)
+(get_attr (identifier) @variable.builtin (#match? @variable.builtin  "^(root|cwd|module)$"))
+(variable_expr (identifier) @variable.builtin (#match? @variable.builtin "^(var|local|path)$"))
+((identifier) @type.builtin (#match? @type.builtin "^(bool|string|number|object|tuple|list|map|set|any)$"))
+((identifier) @keyword (#match? @keyword "^(module|root|cwd|resource|variable|data|locals|terraform|provider|output|dynamic|lifecycle)$"))
+
+; highlight identifier keys as though they were block attributes
+(object_elem key: (expression (variable_expr (identifier) @property)))
+
+(attribute (identifier) @property)
+(function_call (identifier) @function.method)
+
+(comment) @comment
+(null_lit) @constant.builtin
+(numeric_lit) @number
+(bool_lit) @boolean
+
+[
+  (template_interpolation_start) ; ${
+  (template_interpolation_end) ; }
+  (template_directive_start) ; %{
+  (template_directive_end) ; }
+  (strip_marker) ; ~
+] @punctuation.special
+
+[
+  (heredoc_identifier) ; <<END
+  (heredoc_start) ; END
+] @punctuation.delimiter
+
+[
+  (quoted_template_start) ; "
+  (quoted_template_end) ; "
+  (template_literal) ; non-interpolation/directive content
+] @string
+"#;
+
+/// Markdown injection query, copied from `tree-sitter-md`'s
+/// `INJECTION_QUERY_BLOCK` with one change: the `(inline)` content pattern also
+/// sets `injection.include-children`. tree-sitter-highlight EXCLUDES a content
+/// node's children by default, which for an `(inline)` node strips the `**` and
+/// backtick delimiters; the inline grammar then sees only plain text and
+/// captures nothing. Neovim's default is the opposite, so the bundled query
+/// never set the flag. The rest of the patterns are byte-identical to upstream.
+const MARKDOWN_INJECTION_QUERY: &str = r#"
+(fenced_code_block
+  (info_string
+    (language) @injection.language)
+  (code_fence_content) @injection.content)
+
+((html_block) @injection.content
+  (#set! injection.language "html"))
+
+(document
+  .
+  (section
+    .
+    (thematic_break)
+    (_) @injection.content
+    (thematic_break))
+  (#set! injection.language "yaml"))
+
+((minus_metadata) @injection.content
+  (#set! injection.language "yaml"))
+
+((plus_metadata) @injection.content
+  (#set! injection.language "toml"))
+
+((inline) @injection.content
+  (#set! injection.language "markdown_inline")
+  (#set! injection.include-children))
+"#;
+
 /// Croft's standard HIGHLIGHT_NAMES captures under the last-match-wins rule.
 const LUA_OVERLAY_QUERY: &str = r#"
 (if_statement [ "if" "elseif" "else" "then" "end" ] @keyword)
@@ -414,15 +579,19 @@ fn palette_style_for_name(p: &SyntaxPalette, name: &str) -> Style {
     let fg = |c: (u8, u8, u8)| Style::default().fg(rgb(c.0, c.1, c.2));
     match name {
         "comment" => fg(p.comment).add_modifier(Modifier::ITALIC),
-        "keyword" | "label" => fg(p.keyword).add_modifier(Modifier::BOLD),
-        "string" | "string.escape" | "string.special" => fg(p.string),
-        "number" | "boolean" | "constant" | "constant.builtin" | "variable.parameter" => {
-            fg(p.constant)
+        "keyword" | "label" | "conditional" | "keyword.operator" | "storageclass"
+        | "text.title" => fg(p.keyword).add_modifier(Modifier::BOLD),
+        "string" | "string.escape" | "string.special" | "text.literal" => fg(p.string),
+        "number" | "boolean" | "constant" | "constant.builtin" | "variable.parameter"
+        | "parameter" | "float" => fg(p.constant),
+        "function" | "function.builtin" | "function.macro" | "function.method"
+        | "function.call" | "constructor" | "property" | "field" | "text.reference" => {
+            fg(p.function)
         }
-        "function" | "function.builtin" | "function.macro" | "function.method" | "constructor"
-        | "property" => fg(p.function),
-        "type" | "type.builtin" | "module" => fg(p.type_),
+        "type" | "type.builtin" | "type.qualifier" | "module" | "text.uri" => fg(p.type_),
         "attribute" | "tag" | "variable.builtin" => fg(p.tag),
+        "text.emphasis" => fg(p.fg).add_modifier(Modifier::ITALIC),
+        "text.strong" => fg(p.fg).add_modifier(Modifier::BOLD),
         "operator"
         | "punctuation"
         | "punctuation.bracket"
@@ -622,6 +791,15 @@ pub enum LangKind {
     Ql,
     /// A CodeQL database schema (`.dbscheme`, #578).
     Dbscheme,
+    /// Terraform/HCL (`.tf`/`.hcl`/`.tfvars`/`.tftpl`).
+    Hcl,
+    /// SQL (`.sql`).
+    Sql,
+    /// Dockerfile / Containerfile (matched by file name, no extension).
+    Dockerfile,
+    /// The inline half of `tree-sitter-md`, reached only via the block
+    /// grammar's `markdown_inline` injection.
+    MarkdownInline,
 }
 
 /// The bare tree-sitter grammar handle for `kind` — the parser the
@@ -649,6 +827,10 @@ pub fn language_for(kind: LangKind) -> tree_sitter::Language {
         LangKind::Lua => tree_sitter_lua::LANGUAGE.into(),
         LangKind::Ql => tree_sitter_ql::LANGUAGE.into(),
         LangKind::Dbscheme => tree_sitter_ql_dbscheme::LANGUAGE.into(),
+        LangKind::Hcl => tree_sitter_hcl::LANGUAGE.into(),
+        LangKind::Sql => tree_sitter_sequel::LANGUAGE.into(),
+        LangKind::Dockerfile => tree_sitter_containerfile::LANGUAGE.into(),
+        LangKind::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE.into(),
     }
 }
 
@@ -657,7 +839,7 @@ pub fn lang_for_extension(ext: &str) -> Option<LangKind> {
         "rs" => LangKind::Rust,
         "py" | "pyi" | "pyw" => LangKind::Python,
         "js" | "mjs" | "cjs" | "jsx" => LangKind::JavaScript,
-        "ts" => LangKind::TypeScript,
+        "ts" | "mts" | "cts" => LangKind::TypeScript,
         "tsx" => LangKind::Tsx,
         "json" | "jsonc" => LangKind::Json,
         "xml" | "xsd" | "xsl" | "xslt" | "svg" | "plist" => LangKind::Xml,
@@ -674,8 +856,30 @@ pub fn lang_for_extension(ext: &str) -> Option<LangKind> {
         // CodeQL queries and libraries (#578).
         "ql" | "qll" => LangKind::Ql,
         "dbscheme" => LangKind::Dbscheme,
+        // Terraform/HCL, including the `.tftpl` template variant.
+        "tf" | "hcl" | "tfvars" | "tftpl" => LangKind::Hcl,
+        "sql" => LangKind::Sql,
         _ => return None,
     })
+}
+
+/// Resolve a file to a grammar by NAME first (Dockerfile/Containerfile are
+/// extensionless) and by extension otherwise. The editor's open/historical
+/// loaders and the outline parser all resolve through this so a `Dockerfile`
+/// highlights the same everywhere.
+pub fn lang_for_path(path: &std::path::Path) -> Option<LangKind> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        if lower == "dockerfile" || lower.starts_with("dockerfile.") {
+            return Some(LangKind::Dockerfile);
+        }
+        if lower == "containerfile" || lower.starts_with("containerfile.") {
+            return Some(LangKind::Dockerfile);
+        }
+    }
+    path.extension()
+        .and_then(|e| e.to_str())
+        .and_then(lang_for_extension)
 }
 
 fn build_config(kind: LangKind) -> Option<HighlightConfiguration> {
@@ -851,7 +1055,7 @@ fn build_config(kind: LangKind) -> Option<HighlightConfiguration> {
             tree_sitter_md::LANGUAGE.into(),
             "markdown",
             tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-            tree_sitter_md::INJECTION_QUERY_BLOCK,
+            MARKDOWN_INJECTION_QUERY,
             "",
         )
         .ok()?,
@@ -936,6 +1140,38 @@ fn build_config(kind: LangKind) -> Option<HighlightConfiguration> {
             "",
         )
         .ok()?,
+        LangKind::Hcl => HighlightConfiguration::new(
+            tree_sitter_hcl::LANGUAGE.into(),
+            "hcl",
+            HCL_HIGHLIGHTS_QUERY,
+            "",
+            "",
+        )
+        .ok()?,
+        LangKind::Sql => HighlightConfiguration::new(
+            tree_sitter_sequel::LANGUAGE.into(),
+            "sql",
+            tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            "",
+            "",
+        )
+        .ok()?,
+        LangKind::Dockerfile => HighlightConfiguration::new(
+            tree_sitter_containerfile::LANGUAGE.into(),
+            "dockerfile",
+            tree_sitter_containerfile::HIGHLIGHTS_QUERY,
+            tree_sitter_containerfile::INJECTIONS_QUERY,
+            "",
+        )
+        .ok()?,
+        LangKind::MarkdownInline => HighlightConfiguration::new(
+            tree_sitter_md::INLINE_LANGUAGE.into(),
+            "markdown_inline",
+            tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+            tree_sitter_md::INJECTION_QUERY_INLINE,
+            "",
+        )
+        .ok()?,
     };
     cfg.configure(HIGHLIGHT_NAMES);
     Some(cfg)
@@ -989,6 +1225,56 @@ pub fn prewarm_configs() {
     ] {
         let _ = shared_config(kind);
     }
+}
+
+/// Map an injection language name (the `(#set! injection.language "…")` value
+/// a grammar's injections query emits) onto a grammar croft can highlight.
+/// `None` disables highlighting for that injected region only; the injected
+/// region then stays default-coloured while its parent language still paints.
+fn lang_for_injection_name(name: &str) -> Option<LangKind> {
+    Some(match name {
+        "rust" => LangKind::Rust,
+        "python" => LangKind::Python,
+        "javascript" | "js" => LangKind::JavaScript,
+        "typescript" | "ts" => LangKind::TypeScript,
+        "tsx" => LangKind::Tsx,
+        "json" => LangKind::Json,
+        "xml" => LangKind::Xml,
+        "toml" => LangKind::Toml,
+        "yaml" => LangKind::Yaml,
+        "markdown" => LangKind::Markdown,
+        "markdown_inline" => LangKind::MarkdownInline,
+        "go" => LangKind::Go,
+        "html" => LangKind::Html,
+        "css" => LangKind::Css,
+        "bash" | "sh" | "shell" => LangKind::Bash,
+        "c" => LangKind::C,
+        "cpp" | "c++" => LangKind::Cpp,
+        "lua" => LangKind::Lua,
+        "hcl" | "terraform" => LangKind::Hcl,
+        "sql" => LangKind::Sql,
+        "dockerfile" => LangKind::Dockerfile,
+        _ => return None,
+    })
+}
+
+/// Process-wide leaked highlight configs for injected languages. The
+/// `Highlighter`'s injection callback must hand back a `&HighlightConfiguration`
+/// borrowing the source, so each config is leaked once (bounded by the number
+/// of injection names above) to give it a `'static` reference.
+static INJECTION_CONFIGS: OnceLock<Mutex<HashMap<LangKind, &'static HighlightConfiguration>>> =
+    OnceLock::new();
+
+/// Resolve an injection language name to its shared, leaked configuration.
+fn injection_config(name: &str) -> Option<&'static HighlightConfiguration> {
+    let kind = lang_for_injection_name(name)?;
+    let cache = INJECTION_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cfg) = cache.lock().unwrap().get(&kind) {
+        return Some(*cfg);
+    }
+    let built: &'static HighlightConfiguration = Box::leak(Box::new(build_config(kind)?));
+    let mut guard = cache.lock().unwrap();
+    Some(*guard.entry(kind).or_insert(built))
 }
 
 pub struct LangRegistry {
@@ -1058,7 +1344,7 @@ fn highlight_text_with_palette(
         None => return (per_line, protected),
     };
     let mut hl = Highlighter::new();
-    let events = match hl.highlight(cfg.as_ref(), text, None, |_| None) {
+    let events = match hl.highlight(cfg.as_ref(), text, None, |name| injection_config(name)) {
         Ok(e) => e,
         Err(_) => return (per_line, protected),
     };
@@ -1470,12 +1756,153 @@ def f() -> Config:\n\
         assert_eq!(lang_for_extension("cxx"), Some(LangKind::Cpp));
         assert_eq!(lang_for_extension("hpp"), Some(LangKind::Cpp));
         assert_eq!(lang_for_extension("hxx"), Some(LangKind::Cpp));
+        // TypeScript also covers the ESM/CJS template extensions.
+        assert_eq!(lang_for_extension("mts"), Some(LangKind::TypeScript));
+        assert_eq!(lang_for_extension("cts"), Some(LangKind::TypeScript));
+        // Terraform/HCL, its variables, and its template variant.
+        assert_eq!(lang_for_extension("tf"), Some(LangKind::Hcl));
+        assert_eq!(lang_for_extension("hcl"), Some(LangKind::Hcl));
+        assert_eq!(lang_for_extension("tfvars"), Some(LangKind::Hcl));
+        assert_eq!(lang_for_extension("tftpl"), Some(LangKind::Hcl));
+        assert_eq!(lang_for_extension("sql"), Some(LangKind::Sql));
     }
 
     #[test]
     fn lang_for_extension_unknown() {
         assert_eq!(lang_for_extension("xyz"), None);
         assert_eq!(lang_for_extension(""), None);
+    }
+
+    #[test]
+    fn lang_for_path_matches_dockerfile_names() {
+        use std::path::Path;
+        // Dockerfile/Containerfile are extensionless, so the name decides.
+        assert_eq!(
+            lang_for_path(Path::new("Dockerfile")),
+            Some(LangKind::Dockerfile)
+        );
+        assert_eq!(
+            lang_for_path(Path::new("Dockerfile.dev")),
+            Some(LangKind::Dockerfile)
+        );
+        assert_eq!(
+            lang_for_path(Path::new("deploy/Containerfile")),
+            Some(LangKind::Dockerfile)
+        );
+        assert_eq!(
+            lang_for_path(Path::new("containerfile.prod")),
+            Some(LangKind::Dockerfile)
+        );
+        // Everything else still resolves by extension.
+        assert_eq!(lang_for_path(Path::new("main.tf")), Some(LangKind::Hcl));
+        assert_eq!(lang_for_path(Path::new("app.sql")), Some(LangKind::Sql));
+        assert_eq!(
+            lang_for_path(Path::new("notes.md")),
+            Some(LangKind::Markdown)
+        );
+        assert_eq!(lang_for_path(Path::new("mystery.xyz")), None);
+    }
+
+    /// Style of the first span covering `needle` on line `row`, highlighted
+    /// against the fixed Base16 palette so parallel color tests cannot race on
+    /// the process-wide palette.
+    fn style_at(src: &str, kind: LangKind, row: usize, needle: &str) -> Option<Style> {
+        let mut reg = LangRegistry::new();
+        let ls = compute_line_starts(src.as_bytes());
+        let (h, _) = highlight_text_with_palette(
+            &mut reg,
+            kind,
+            src.as_bytes(),
+            &ls,
+            &SyntaxPalette::BASE16,
+        );
+        let line = src.split('\n').nth(row)?;
+        let col = line.find(needle)?;
+        h[row]
+            .iter()
+            .find(|s| s.start <= col && col < s.end)
+            .map(|s| s.style)
+    }
+
+    /// Foreground color of the first span covering `needle` on line `row`.
+    fn color_at(src: &str, kind: LangKind, row: usize, needle: &str) -> Option<Color> {
+        style_at(src, kind, row, needle).and_then(|s| s.fg)
+    }
+
+    #[test]
+    fn highlight_hcl_colors_keywords_and_attributes() {
+        let keyword = rgb(0xb4, 0x8e, 0xad);
+        let function = rgb(0x8f, 0xa1, 0xb3);
+        let src = "resource \"aws_s3_bucket\" \"b\" {\n  bucket = var.name\n}\n";
+        assert_eq!(
+            color_at(src, LangKind::Hcl, 0, "resource"),
+            Some(keyword),
+            "the block keyword should be @keyword"
+        );
+        assert_eq!(
+            color_at(src, LangKind::Hcl, 1, "bucket"),
+            Some(function),
+            "an attribute name should be @property"
+        );
+    }
+
+    #[test]
+    fn highlight_sql_colors_keywords() {
+        let keyword = rgb(0xb4, 0x8e, 0xad);
+        let src = "SELECT id, name FROM users WHERE id = 1;\n";
+        assert_eq!(
+            color_at(src, LangKind::Sql, 0, "SELECT"),
+            Some(keyword),
+            "SELECT should be @keyword"
+        );
+        assert_eq!(
+            color_at(src, LangKind::Sql, 0, "FROM"),
+            Some(keyword),
+            "FROM should be @keyword"
+        );
+    }
+
+    #[test]
+    fn highlight_dockerfile_colors_instructions() {
+        let keyword = rgb(0xb4, 0x8e, 0xad);
+        let src = "FROM node:20\nRUN pnpm build\n";
+        assert_eq!(
+            color_at(src, LangKind::Dockerfile, 0, "FROM"),
+            Some(keyword),
+            "FROM should be @keyword"
+        );
+        assert_eq!(
+            color_at(src, LangKind::Dockerfile, 1, "RUN"),
+            Some(keyword),
+            "RUN should be @keyword"
+        );
+    }
+
+    #[test]
+    fn highlight_markdown_covers_heading_inline_and_fenced_code() {
+        let keyword = rgb(0xb4, 0x8e, 0xad);
+        let string = rgb(0xa3, 0xbe, 0x8c);
+        let src = "# Title\n\nsome **bold** and `code`\n\n```rust\nfn main() {}\n```\n";
+        assert_eq!(
+            color_at(src, LangKind::Markdown, 0, "Title"),
+            Some(keyword),
+            "heading text should be @text.title (keyword hue)"
+        );
+        assert!(
+            style_at(src, LangKind::Markdown, 2, "bold")
+                .is_some_and(|s| s.add_modifier.contains(Modifier::BOLD)),
+            "strong emphasis should be @text.strong (bold)"
+        );
+        assert_eq!(
+            color_at(src, LangKind::Markdown, 2, "code"),
+            Some(string),
+            "inline code should be @text.literal (string hue)"
+        );
+        assert_eq!(
+            color_at(src, LangKind::Markdown, 5, "fn"),
+            Some(keyword),
+            "a fenced code block should be highlighted via injection"
+        );
     }
 
     #[test]

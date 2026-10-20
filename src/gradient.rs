@@ -1,6 +1,7 @@
-//! The orange→green corner gradient shared by the welcome "Recent Activity"
-//! box and, under the Black theme, the focused-pane border. Defined once here
-//! so both surfaces sweep through identical colours.
+//! The brand accents shared by croft's chrome. [`GRAD_TL`] and [`GRAD_TR`] are
+//! the two corner colours that survived the original orange→green sweep and
+//! still tint the logo badge and release accents. The hairline outline every
+//! `paint_gradient_box` caller draws is now a flat [`OUTLINE`] light blue.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -8,14 +9,19 @@ use ratatui::style::{Color, Style};
 
 pub const GRAD_TL: (u8, u8, u8) = (0x66, 0xd9, 0xef);
 pub const GRAD_TR: (u8, u8, u8) = (0xff, 0xa8, 0x27);
-pub const GRAD_BR: (u8, u8, u8) = (0xa6, 0xe2, 0x2e);
-pub const GRAD_BL: (u8, u8, u8) = (0x75, 0x71, 0x5e);
 
 /// Muted dark-teal fill for the selected row of popups/menus under the Black
 /// theme, replacing the legacy bright-blue (`#4e9aff`) highlight inherited from
 /// the pre-brand VS Code accent. Quiet enough that the gradient border carries
 /// the brand identity; white text reads cleanly on top.
 pub const POPUP_SEL_BG: (u8, u8, u8) = (0x75, 0x71, 0x5e);
+
+/// Light-blue stroke for the hairline outline `paint_gradient_box` still
+/// draws (find/replace overlay, command palette, pickers, menus, and the
+/// focused terminal). The chrome used to sweep a rainbow between the `GRAD_*`
+/// corners; the dev-workspace fork flattens that stroke to one calm light blue
+/// (the same value as [`GRAD_TL`]) so the outline reads as a single quiet line.
+pub const OUTLINE: (u8, u8, u8) = GRAD_TL;
 
 /// Bright teal/cyan card accent (borders, line-art illustrations, links) on
 /// the empty-state cards under the Black theme — the same value the Remote
@@ -40,6 +46,7 @@ pub const PANEL_TITLE_FG: (u8, u8, u8) = (0xf8, 0xf8, 0xf2);
 /// over the gradient border that carries the brand.
 pub const INNER_ACCENT: (u8, u8, u8) = (0x66, 0xd9, 0xef);
 
+#[cfg(test)]
 pub fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| ((1.0 - t) * x as f32 + t * y as f32).round() as u8;
@@ -88,9 +95,8 @@ pub fn rgb_color((r, g, b): (u8, u8, u8)) -> Color {
     Color::Indexed(best)
 }
 
-/// Paint a rounded-rectangle border whose stroke colour interpolates
-/// linearly between the four corner colours along each edge. The interior
-/// is left untouched so the caller can fill it with content.
+/// Paint a rounded-rectangle border in the flat [`OUTLINE`] light blue. The
+/// interior is left untouched so the caller can fill it with content.
 ///
 /// The rect is clipped against the buffer's area, so callers don't have to
 /// do the bounds math themselves — passing a rect that runs off the edge
@@ -132,16 +138,13 @@ fn paint_gradient_box_weighted(buf: &mut Buffer, rect: Rect, heavy: bool) {
     }
     let horiz = if heavy { "\u{2501}" } else { "\u{2500}" };
     let vert = if heavy { "\u{2503}" } else { "\u{2502}" };
+    // One flat light-blue stroke around the whole box. The corner colours are
+    // no longer interpolated: the outline is a single calm line everywhere it
+    // survives in the dev-workspace fork.
+    let stroke = Style::default().fg(rgb_color(OUTLINE));
     let max_x = rect.width - 1;
     let max_y = rect.height - 1;
     for x in 0..rect.width {
-        let u = if max_x > 0 {
-            x as f32 / max_x as f32
-        } else {
-            0.0
-        };
-        let top = lerp_rgb(GRAD_TL, GRAD_TR, u);
-        let bot = lerp_rgb(GRAD_BL, GRAD_BR, u);
         let top_ch = if x == 0 {
             "\u{256d}"
         } else if x == max_x {
@@ -156,38 +159,11 @@ fn paint_gradient_box_weighted(buf: &mut Buffer, rect: Rect, heavy: bool) {
         } else {
             horiz
         };
-        buf.set_string(
-            rect.x + x,
-            rect.y,
-            top_ch,
-            Style::default().fg(rgb_color(top)),
-        );
-        buf.set_string(
-            rect.x + x,
-            rect.y + max_y,
-            bot_ch,
-            Style::default().fg(rgb_color(bot)),
-        );
+        buf.set_string(rect.x + x, rect.y, top_ch, stroke);
+        buf.set_string(rect.x + x, rect.y + max_y, bot_ch, stroke);
     }
     for y in 1..max_y {
-        let v = if max_y > 0 {
-            y as f32 / max_y as f32
-        } else {
-            0.0
-        };
-        let left = lerp_rgb(GRAD_TL, GRAD_BL, v);
-        let right = lerp_rgb(GRAD_TR, GRAD_BR, v);
-        buf.set_string(
-            rect.x,
-            rect.y + y,
-            vert,
-            Style::default().fg(rgb_color(left)),
-        );
-        buf.set_string(
-            rect.x + max_x,
-            rect.y + y,
-            vert,
-            Style::default().fg(rgb_color(right)),
-        );
+        buf.set_string(rect.x, rect.y + y, vert, stroke);
+        buf.set_string(rect.x + max_x, rect.y + y, vert, stroke);
     }
 }

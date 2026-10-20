@@ -110,6 +110,10 @@ pub enum Command {
     CloseEditor,
     ReopenClosedEditor,
     NewFile,
+    /// Cycle the active editor tab (croft-tmux-monokai patch): Ctrl+Tab /
+    /// Ctrl+Shift+Tab walk the open tabs, wrapping at the ends.
+    NextTab,
+    PreviousTab,
     // Sublime/Atom-style cursor, selection, and edit commands (croft-tmux-monokai
     // patch). Bound from keybindings.json and forwarded by Ghostty.
     CursorLineStart,
@@ -494,6 +498,8 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::CloseEditor,
     Command::ReopenClosedEditor,
     Command::NewFile,
+    Command::NextTab,
+    Command::PreviousTab,
     Command::CursorLineStart,
     Command::CursorLineEnd,
     Command::CursorLineStartSelect,
@@ -829,6 +835,8 @@ impl Command {
             Command::CloseEditor => "View: Close Editor",
             Command::ReopenClosedEditor => "View: Reopen Closed Editor",
             Command::NewFile => "File: New Untitled File",
+            Command::NextTab => "View: Next Tab",
+            Command::PreviousTab => "View: Previous Tab",
             Command::CursorLineStart => "Cursor: Line Start",
             Command::CursorLineEnd => "Cursor: Line End",
             Command::CursorLineStartSelect => "Cursor: Select to Line Start",
@@ -1171,6 +1179,8 @@ impl Command {
             Command::CloseEditor => "Cmd+W",
             Command::ReopenClosedEditor => "Cmd+K Shift+W",
             Command::NewFile => "Cmd+N",
+            Command::NextTab => "Ctrl+Tab",
+            Command::PreviousTab => "Ctrl+Shift+Tab",
             Command::CursorLineStart => "Cmd+Left",
             Command::CursorLineEnd => "Cmd+Right",
             Command::CursorLineStartSelect => "Cmd+Shift+Left",
@@ -1516,6 +1526,8 @@ impl Command {
             Command::CloseEditor => "close_editor",
             Command::ReopenClosedEditor => "reopen_closed_editor",
             Command::NewFile => "new_file",
+            Command::NextTab => "next_tab",
+            Command::PreviousTab => "previous_tab",
             Command::CursorLineStart => "cursor_line_start",
             Command::CursorLineEnd => "cursor_line_end",
             Command::CursorLineStartSelect => "cursor_line_start_select",

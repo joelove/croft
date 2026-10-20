@@ -91,6 +91,9 @@ pub enum ListPurpose {
     DismissAlert,
     /// A result set of a CodeQL query run (#578): `id` is its CSV.
     CodeqlResultSet,
+    /// Ctrl+Tab / Ctrl+Shift+Tab (croft-tmux-monokai patch): the open editor
+    /// tabs, `id` the 0-based tab index. Enter activates the row.
+    GoToTab,
 }
 
 /// The Review Pull Request row that asks for a number or URL instead.

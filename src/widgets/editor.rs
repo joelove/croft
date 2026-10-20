@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::highlight::{
-    HiSpan, LangKind, LangRegistry, compute_line_starts, decode_semantic_tokens, lang_for_extension,
+    HiSpan, LangKind, LangRegistry, compute_line_starts, decode_semantic_tokens, lang_for_path,
 };
 use crate::widgets::scrollbar;
 
@@ -4081,10 +4081,7 @@ impl Editor {
         if e.lines.is_empty() {
             e.lines.push(String::new());
         }
-        e.lang = path
-            .extension()
-            .and_then(|x| x.to_str())
-            .and_then(lang_for_extension);
+        e.lang = lang_for_path(path);
         e.recompute_highlights();
         e.set_git_head_lines(path.to_path_buf(), Some(baseline));
         // Never edited, so the marks are computed once, here.
@@ -4898,10 +4895,7 @@ impl Editor {
         // encoded as is no longer this tab's problem.
         self.encoding_loss = false;
         self.lossy_save_armed = false;
-        self.lang = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(lang_for_extension);
+        self.lang = lang_for_path(path);
         self.wrap_override = None;
         // Folds are line numbers into the OLD file. A preview tab is reused for
         // the next single-click, so without this the incoming file arrives with
@@ -11966,8 +11960,10 @@ fn line_comment_token(lang: Option<LangKind>) -> Option<&'static str> {
         Some(LangKind::Python)
         | Some(LangKind::Yaml)
         | Some(LangKind::Toml)
+        | Some(LangKind::Hcl)
+        | Some(LangKind::Dockerfile)
         | Some(LangKind::Bash) => Some("#"),
-        Some(LangKind::Lua) => Some("--"),
+        Some(LangKind::Lua) | Some(LangKind::Sql) => Some("--"),
         _ => None,
     }
 }
@@ -11988,6 +11984,7 @@ fn block_comment_tokens(lang: Option<LangKind>) -> Option<(&'static str, &'stati
         | Some(LangKind::Css)
         | Some(LangKind::Ql)
         | Some(LangKind::Dbscheme) => Some(("/*", "*/")),
+        Some(LangKind::Hcl) => Some(("/*", "*/")),
         Some(LangKind::Html) | Some(LangKind::Markdown) => Some(("<!--", "-->")),
         Some(LangKind::Lua) => Some(("--[[", "]]")),
         // Python has no true block comment; VS Code's language config maps
@@ -12385,7 +12382,7 @@ fn scan_color_swatches(
 
 fn indent_unit_for(lang: Option<LangKind>) -> &'static str {
     match lang {
-        Some(LangKind::Yaml) => "  ",
+        Some(LangKind::Yaml) | Some(LangKind::Hcl) | Some(LangKind::Dockerfile) => "  ",
         _ => "    ",
     }
 }
@@ -12594,6 +12591,10 @@ pub fn language_label(lang: Option<LangKind>) -> &'static str {
         Some(LangKind::Lua) => "Lua",
         Some(LangKind::Ql) => "CodeQL",
         Some(LangKind::Dbscheme) => "CodeQL Database Scheme",
+        Some(LangKind::Hcl) => "Terraform",
+        Some(LangKind::Sql) => "SQL",
+        Some(LangKind::Dockerfile) => "Dockerfile",
+        Some(LangKind::MarkdownInline) => "Markdown",
     }
 }
 
@@ -12622,6 +12623,10 @@ pub fn language_scope_id(lang: Option<LangKind>) -> &'static str {
         Some(LangKind::Lua) => "lua",
         Some(LangKind::Ql) => "ql",
         Some(LangKind::Dbscheme) => "dbscheme",
+        Some(LangKind::Hcl) => "terraform",
+        Some(LangKind::Sql) => "sql",
+        Some(LangKind::Dockerfile) => "dockerfile",
+        Some(LangKind::MarkdownInline) => "markdown",
     }
 }
 
@@ -12646,6 +12651,9 @@ pub const SELECTABLE_LANGUAGES: &[LangKind] = &[
     LangKind::Lua,
     LangKind::Ql,
     LangKind::Dbscheme,
+    LangKind::Hcl,
+    LangKind::Sql,
+    LangKind::Dockerfile,
 ];
 
 /// Number of leading whitespace bytes to strip for one outdent step, matching

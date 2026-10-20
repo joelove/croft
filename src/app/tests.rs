@@ -1755,6 +1755,56 @@ fn a_bound_gesture_runs_its_command() {
 }
 
 #[test]
+fn ctrl_tab_opens_and_walks_the_go_to_tab_picker() {
+    // The dev-workspace chord end to end: the keybindings.json rows resolve
+    // Ctrl+Tab / Ctrl+Shift+Tab to the tab switcher, which opens a picker (the
+    // fork hides the tab strip) with the next tab highlighted. A further chord
+    // while it is open walks the list; Enter activates. Ctrl+Shift+Tab arrives
+    // as `BackTab`, which the chord normalizer folds back to shift+tab.
+    use crate::widgets::list_picker::ListPurpose;
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a.rs");
+    let b = tmp.path().join("b.rs");
+    std::fs::write(&a, "a\n").unwrap();
+    std::fs::write(&b, "b\n").unwrap();
+    let mut app = App::new(tmp.path().to_path_buf()).unwrap();
+    app.editor.open_pinned(&a).unwrap();
+    app.editor.open_pinned(&b).unwrap();
+    app.focus = Pane::Editor;
+    app.keymap = crate::keymap::Keymap::from_json(
+        r#"[{"key": "ctrl+tab", "command": "next_tab"},
+            {"key": "ctrl+shift+tab", "command": "previous_tab"}]"#,
+    );
+
+    assert_eq!(app.editor.tab_count(), 2);
+    assert_eq!(app.editor.active_index(), 1);
+    // Ctrl+Tab opens the picker with the NEXT tab (wrapping) highlighted.
+    app.handle_key(key(KeyCode::Tab, KeyModifiers::CONTROL))
+        .unwrap();
+    {
+        let picker = app.list_picker.as_ref().expect("Ctrl+Tab opens the picker");
+        assert_eq!(picker.purpose, ListPurpose::GoToTab);
+        assert_eq!(picker.selected, 0);
+    }
+    // A second Ctrl+Tab walks the list instead of closing it.
+    app.handle_key(key(KeyCode::Tab, KeyModifiers::CONTROL))
+        .unwrap();
+    assert_eq!(app.list_picker.as_ref().unwrap().selected, 1);
+    // Ctrl+Shift+Tab (BackTab) walks back.
+    app.handle_key(key(
+        KeyCode::BackTab,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ))
+    .unwrap();
+    assert_eq!(app.list_picker.as_ref().unwrap().selected, 0);
+    // Enter activates the highlighted tab and closes the picker.
+    app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    assert!(app.list_picker.is_none());
+    assert_eq!(app.editor.active_index(), 0);
+}
+
+#[test]
 fn a_gesture_runs_the_binding_for_the_region_it_was_clicked_in() {
     // The same spelling bound in two regions must resolve by where the click
     // landed, which is what `mouse_context_for` exists for.
@@ -6416,7 +6466,8 @@ fn the_gradient_box_comes_in_two_weights() {
 }
 
 #[test]
-fn paint_gradient_box_draws_rounded_corners_with_corner_colours() {
+fn paint_gradient_box_draws_rounded_corners_with_a_flat_light_blue_outline() {
+    use crate::gradient::OUTLINE;
     let rect = Rect {
         x: 0,
         y: 0,
@@ -6431,11 +6482,11 @@ fn paint_gradient_box_draws_rounded_corners_with_corner_colours() {
     assert_eq!(buf[(7, 3)].symbol(), "\u{256f}", "bottom-right rounded");
     assert_eq!(buf[(3, 0)].symbol(), "\u{2500}", "top edge horizontal");
     assert_eq!(buf[(0, 1)].symbol(), "\u{2502}", "left edge vertical");
-    // Top-left cell carries the GRAD_TL fg colour exactly.
+    // Every stroke cell carries the flat OUTLINE light blue exactly.
     let tl_fg = buf[(0, 0)].fg;
-    assert_eq!(tl_fg, rgb_color(GRAD_TL));
+    assert_eq!(tl_fg, rgb_color(OUTLINE));
     let tr_fg = buf[(7, 0)].fg;
-    assert_eq!(tr_fg, rgb_color(GRAD_TR));
+    assert_eq!(tr_fg, rgb_color(OUTLINE));
 }
 
 #[test]

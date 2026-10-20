@@ -75,6 +75,16 @@ tree-sitter-ql = "0.23"
 # CodeQL `.dbscheme` highlighting (#578). MIT; ships no highlights query,
 # so croft carries its own.
 tree-sitter-ql-dbscheme = "0.23"
+# Terraform/HCL highlighting (`.tf`/`.hcl`/`.tfvars`/`.tftpl`).
+tree-sitter-hcl = "1.1"
+# SQL highlighting (`.sql`). DerekStride's grammar (published as
+# `tree-sitter-sequel`); the `tree-sitter-sql` name is an older, less
+# complete grammar.
+tree-sitter-sequel = "0.3"
+# Dockerfile highlighting (filename-detected, no extension). The
+# `tree-sitter-dockerfile` crate is stuck on tree-sitter 0.20; WharfLab's
+# Containerfile grammar is the maintained 0.1-language ABI fork.
+tree-sitter-containerfile = "0.9"
 
 # CommonMark parser behind the rendered Markdown preview (Cmd+Shift+V).
 # rustdoc / mdBook's engine; parser only, no HTML output needed.

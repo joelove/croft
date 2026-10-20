@@ -1644,13 +1644,14 @@ impl Widget for &mut FileTree {
             }
 
             let line = Line::from(spans);
-            // Black theme: the selected/marked rows wear the brand's muted
-            // dark-teal fill (identical to the right-click menu's selection),
-            // replacing the legacy bright-blue accent. Croft Dark keeps the
-            // historical blue. The drop target stays green either way.
+            // Gradient themes: the selected row wears a flat dark-gray fill
+            // (#303030) so the highlighted file reads as a quiet band instead
+            // of the popup menu's bright selection; marked rows keep the muted
+            // dark-teal. Croft Dark keeps the historical blue. The drop target
+            // stays green either way.
             let (sel_bg, mark_bg) = if self.focus_gradient {
                 (
-                    crate::gradient::rgb_color(crate::gradient::POPUP_SEL_BG),
+                    self.theme.ui(Color::Rgb(0x30, 0x30, 0x30)),
                     self.theme.ui(Color::Rgb(0x18, 0x35, 0x32)),
                 )
             } else {
@@ -2387,6 +2388,30 @@ mod tests {
             buf[(area.x + 1, inner_y)].bg,
             Color::Rgb(0x09, 0x4d, 0x77),
             "selection outranks hover so the row never dims to the hover lift"
+        );
+    }
+
+    /// The highlighted file row wears the flat #303030 band on gradient
+    /// themes (the personal fork's file-tree selection), not the popup
+    /// menu's bright fill.
+    #[test]
+    fn gradient_theme_selected_row_wears_the_flat_dark_gray_fill() {
+        let (_tmp, mut tree) = fixture();
+        tree.focused = true;
+        tree.focus_gradient = true;
+        tree.selected = 0;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 8,
+        };
+        let mut buf = Buffer::empty(area);
+        (&mut tree).render(area, &mut buf);
+        assert_eq!(
+            buf[(area.x + 1, area.y)].bg,
+            Color::Rgb(0x30, 0x30, 0x30),
+            "the selected file row wears #303030"
         );
     }
 

@@ -15,6 +15,7 @@ Per platform:
 | `Ctrl+s` / `Cmd+s` | Save the open file |
 | Typing `(` `[` `{` or a quote | Auto-closing pairs: the pair inserts with the caret between (openers never before a word, quotes never after one); typing the closer steps over; a selection is surrounded; backspace inside an empty pair deletes both. Settings gear → "Auto Closing Pairs" toggles |
 | `Ctrl+q` | Quit |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Open the **Go to Tab** picker (the fork hides the tab strip, so this is how the open tabs stay visible), with the next / previous tab highlighted; press the chord again to walk the list, Enter to activate, Esc to close (croft-tmux-monokai patch) |
 | `F1` | Open the shortcuts modal |
 | `F6` | Cycle focus across panes (tree → editor → terminal → tree) |
 | `Ctrl+b` / `Cmd+b` | Toggle the primary side bar (left pane) |
