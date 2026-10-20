@@ -62288,11 +62288,15 @@ fn is_markdown_preview_key(key: KeyEvent) -> bool {
     is_cmd_shift_letter(key, 'v')
 }
 
-/// Cmd+Enter (#353): run the shell fence under the caret in a Markdown
-/// source buffer.
+/// Cmd+Enter / Ctrl+Enter (#353): run the shell fence under the caret in a
+/// Markdown source buffer. `Ctrl+Enter` is the chord that survives Ghostty's
+/// Cmd+Enter fullscreen; the editor's insert-line-below shares it and runs
+/// only when the caret is not in a fence.
 fn is_run_fence_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Enter)
-        && key.modifiers.contains(KeyModifiers::SUPER)
+        && key
+            .modifiers
+            .intersects(KeyModifiers::SUPER | KeyModifiers::CONTROL)
         // Cmd+Shift+Enter is "insert line above"; Alt chords stay the
         // editor's.
         && !key
@@ -63762,8 +63766,10 @@ fn is_editor_kill_to_bol_key(key: KeyEvent) -> bool {
         && !key.modifiers.contains(KeyModifiers::ALT)
 }
 
-/// Insert line below: `Cmd+Enter` (macOS) / `Ctrl+Enter` (Linux), matching VS
-/// Code's `editor.action.insertLineAfter`. (Previously bound to `Cmd+O`, a
+/// Insert line below: `Ctrl+Enter`, matching VS Code's Linux
+/// `editor.action.insertLineAfter`. `Cmd+Enter` is Ghostty's fullscreen chord,
+/// so macOS uses `Ctrl+Enter` too; the `SUPER` arm stays for terminals (and
+/// iTerm2 setups) that still deliver it. (Previously bound to `Cmd+O`, a
 /// croft-specific chord; `Cmd+O` is now the dev-workspace open-file picker.)
 fn is_editor_open_line_below_key(key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Enter) {

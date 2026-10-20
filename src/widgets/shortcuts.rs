@@ -337,7 +337,7 @@ pub const SHORTCUT_GROUPS: &[ShortcutGroup] = &[
                 handler: "is_markdown_preview_key",
             },
             ShortcutEntry {
-                keys: "Cmd+Enter",
+                keys: "Cmd/Ctrl+Enter",
                 description: "Markdown: run the runnable fence under the caret in a named pane, new or reused (confirms first)",
                 handler: "is_run_fence_key",
             },
@@ -642,12 +642,12 @@ pub const SHORTCUT_GROUPS: &[ShortcutGroup] = &[
                 handler: "",
             },
             ShortcutEntry {
-                keys: "Cmd+o",
+                keys: "Ctrl+Enter",
                 description: "Open a new line below, inheriting indent",
                 handler: "is_editor_open_line_below_key",
             },
             ShortcutEntry {
-                keys: "Cmd+Shift+O",
+                keys: "Cmd+Shift+Enter",
                 description: "Open a new line above, inheriting indent",
                 handler: "is_editor_open_line_above_key",
             },

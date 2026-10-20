@@ -15258,11 +15258,12 @@ fn editor_ctrl_u_kills_to_start_of_line() {
 }
 
 #[test]
-fn editor_cmd_enter_opens_line_below_with_indent() {
+fn editor_ctrl_enter_opens_line_below_with_indent() {
+    // Ghostty owns Cmd+Enter (fullscreen), so Ctrl+Enter is the delivered chord.
     let mut app = editor_app_with_lines(&["    foo", "bar"]);
     app.editor.cursor_row = 0;
     app.editor.cursor_col = 4;
-    app.handle_key(key(KeyCode::Enter, KeyModifiers::SUPER))
+    app.handle_key(key(KeyCode::Enter, KeyModifiers::CONTROL))
         .unwrap();
     assert_eq!(app.editor.lines, vec!["    foo", "    ", "bar"]);
     assert_eq!((app.editor.cursor_row, app.editor.cursor_col), (1, 4));
@@ -24849,6 +24850,11 @@ fn clicking_a_fence_play_glyph_runs_it_in_a_named_pane() {
     assert!(super::is_run_fence_key(key(
         KeyCode::Enter,
         KeyModifiers::SUPER
+    )));
+    // Ctrl+Enter is the chord that survives Ghostty's Cmd+Enter fullscreen.
+    assert!(super::is_run_fence_key(key(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL
     )));
 }
 
