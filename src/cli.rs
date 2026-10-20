@@ -59,8 +59,8 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub zen: bool,
 
-    /// Internal: restore tabs/layout from a session file written just
-    /// before a self-update re-exec. Not intended for manual use.
+    /// Internal: restore tabs/layout from a session file. Not intended for
+    /// manual use.
     #[arg(long, hide = true)]
     pub restore_session: Option<PathBuf>,
 
@@ -536,16 +536,9 @@ pub enum CliCommand {
     },
 }
 
-/// `--build-info`'s text: version, commit and build time, plus how the
-/// binary was installed when a package manager owns it (#375).
-fn build_info_line(source: crate::update_check::InstallSource) -> String {
-    match source {
-        crate::update_check::InstallSource::Homebrew => format!(
-            "{}, installed with Homebrew)",
-            VERBOSE_VERSION.trim_end_matches(')')
-        ),
-        crate::update_check::InstallSource::SelfManaged => VERBOSE_VERSION.to_string(),
-    }
+/// `--build-info`'s text: version, commit and build time.
+fn build_info_line() -> String {
+    VERBOSE_VERSION.to_string()
 }
 
 impl Cli {
@@ -553,10 +546,7 @@ impl Cli {
         // `--build-info` is a pure query: answer and exit before any setup,
         // exactly as clap does for `--version`.
         if self.build_info {
-            println!(
-                "croft {}",
-                build_info_line(crate::update_check::current_install_source())
-            );
+            println!("croft {}", build_info_line());
             return Ok(());
         }
         // Pure liveness probes answer before anything else runs: the remote
@@ -2078,18 +2068,9 @@ mod tests {
         );
     }
 
-    /// #375: `--build-info` says when a package manager owns the binary, so a
-    /// bug report shows which upgrade path the user has.
     #[test]
-    fn build_info_names_a_homebrew_install() {
-        use crate::update_check::InstallSource;
-        let brew = build_info_line(InstallSource::Homebrew);
-        assert!(
-            brew.starts_with(VERBOSE_VERSION.trim_end_matches(')')),
-            "{brew}"
-        );
-        assert!(brew.ends_with(", installed with Homebrew)"), "{brew}");
-        assert_eq!(build_info_line(InstallSource::SelfManaged), VERBOSE_VERSION);
+    fn build_info_reports_the_version() {
+        assert_eq!(build_info_line(), VERBOSE_VERSION);
     }
 
     /// #282: `--version` is a plain `x.y.z`. The regression this guards is a

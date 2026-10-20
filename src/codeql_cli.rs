@@ -67,11 +67,43 @@ pub fn installed_versions(root: &Path) -> Vec<String> {
         .flatten()
         .flatten()
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter_map(|name| crate::update_check::parse_version(&name).map(|v| (v, name)))
+        .filter_map(|name| parse_version(&name).map(|v| (v, name)))
         .filter(|(_, name)| managed_program(root, name).is_file())
         .collect();
     found.sort_by_key(|v| std::cmp::Reverse(v.0));
     found.into_iter().map(|(_, name)| name).collect()
+}
+
+/// `1.2.3` or `v1.2.3` as a comparable triple; anything else is not a
+/// release croft knows how to rank.
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    let patch = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// Whether `candidate` is a strictly newer release than `current`.
+/// Unparseable on either side is "no".
+fn is_newer(candidate: &str, current: &str) -> bool {
+    match (parse_version(candidate), parse_version(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
+}
+
+/// The release version out of GitHub's release JSON (`tag_name`), the
+/// leading `v` stripped.
+fn latest_from_release_json(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let tag = v.get("tag_name")?.as_str()?.trim();
+    let version = tag.trim_start_matches('v');
+    parse_version(version).map(|_| version.to_string())
 }
 
 /// Where the `codeql` in use came from.
@@ -144,7 +176,7 @@ pub fn resolve(
 /// check has found, else the pinned one.
 pub fn install_version(latest: Option<&str>) -> &str {
     match latest {
-        Some(l) if crate::update_check::is_newer(l, PINNED_VERSION) => l,
+        Some(l) if is_newer(l, PINNED_VERSION) => l,
         _ => PINNED_VERSION,
     }
 }
@@ -153,7 +185,7 @@ pub fn install_version(latest: Option<&str>) -> &str {
 /// with `current` the version in use (`None` when no CLI runs).
 pub fn update_status(latest: &str, current: Option<&str>) -> String {
     match current {
-        Some(cur) if !crate::update_check::is_newer(latest, cur) => {
+        Some(cur) if !is_newer(latest, cur) => {
             format!("The CodeQL CLI is up to date (v{cur})")
         }
         _ => format!(
@@ -229,7 +261,7 @@ fn fetch_latest() -> Result<String, String> {
         .call()
         .map_err(|e| e.to_string())?;
     let body = resp.into_string().map_err(|e| e.to_string())?;
-    crate::update_check::latest_from_release_json(&body)
+    latest_from_release_json(&body)
         .ok_or_else(|| String::from("GitHub's answer named no release version"))
 }
 
@@ -416,6 +448,26 @@ mod tests {
             (r.program, r.source),
             (PathBuf::from("codeql"), Source::Fallback)
         );
+    }
+
+    #[test]
+    fn versions_parse_with_or_without_the_v_and_compare_numerically() {
+        assert_eq!(parse_version("v0.1.800"), Some((0, 1, 800)));
+        assert_eq!(parse_version("0.1.9"), Some((0, 1, 9)));
+        assert_eq!(parse_version("0.1"), None);
+        assert_eq!(parse_version("0.1.9-dirty"), None);
+        assert!(is_newer("0.1.800", "0.1.799"));
+        assert!(is_newer("0.2.0", "0.1.999"), "numeric, not lexical");
+        assert!(!is_newer("0.1.799", "0.1.799"));
+        assert!(!is_newer("garbage", "0.1.799"), "unparseable never nags");
+    }
+
+    #[test]
+    fn the_release_tag_is_read_from_github_json() {
+        let json = r#"{"tag_name":"v0.1.900","name":"croft v0.1.900","assets":[]}"#;
+        assert_eq!(latest_from_release_json(json).as_deref(), Some("0.1.900"));
+        assert_eq!(latest_from_release_json(r#"{"message":"Not Found"}"#), None);
+        assert_eq!(latest_from_release_json("not json"), None);
     }
 
     #[test]

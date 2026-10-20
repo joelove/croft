@@ -33,14 +33,10 @@ jobs:
   release-hygiene:
     # Every merge that changes what ships must be a release in its own right
     # (#281): the version increments (two different binaries must never share
-    # a version and differ only in commit hash), and src/release_notes/<version>.md
-    # exists and says something, so the welcome panel's "IN THIS RELEASE" card
-    # describes THIS version instead of silently carrying the previous
-    # release's story. One file per version (#399) so two open PRs describing
-    # different changes never collide on the same file.
+    # a version and differ only in commit hash).
     # Docs / CI / test-only changes ship nothing and are exempt, including a
     # diff confined to a `#[cfg(test)]` module inside a shipped file (#461).
-    name: version bump + release notes
+    name: version bump
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # This job now runs a SCRIPT from the submitted branch, which the inline
@@ -61,14 +57,10 @@ jobs:
           # Full history so the merge-base with the PR base resolves.
           fetch-depth: 0
           persist-credentials: false
-      - name: Shipped changes must bump the version and replace the notes
+      - name: Shipped changes must bump the version
         run: |
           set -euo pipefail
           base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
-          # --no-renames: git collapses a rename to its destination alone, so
-          # `git mv 0.1.808.md 0.1.809.md` would look like "wrote this
-          # version's notes" while destroying the previous release's. Split
-          # into a delete plus an add, the stale guard below sees the delete.
           changed="$(git diff --no-renames --name-only "$base" HEAD)"
           # What ships in the binary: sources, baked-in assets, the build
           # script, and the dependency set. src/app/tests.rs and tests/ are
@@ -116,35 +108,6 @@ jobs:
           highest="$(printf '%s\n%s\n' "$old" "$new" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)"
           if [ "$new" = "$old" ] || [ "$highest" != "$new" ]; then
             echo "::error file=Cargo.toml::This PR changes shipped files but the version is still $old. Bump it (base: $old, head: $new) - two binaries must never share a version and differ only in commit hash."
-            fail=1
-          fi
-          # One notes file per version (#399): the check is that THIS version's
-          # file exists and says something, not that a shared file was touched.
-          # Two PRs adding different versions' notes then never collide.
-          notes="src/release_notes/$new.md"
-          # AUTHORSHIP, not merely existence. A file for this version can
-          # already be on main - left behind by a revert that dropped the
-          # code but not the notes - and a bump onto it would pass while the
-          # panel advertised a release the binary does not contain. This PR
-          # has to have written it.
-          if ! printf '%s\n' "$changed" | grep -qx "$notes"; then
-            echo "::error file=$notes::This PR changes shipped files but does not write $notes. Write this version's highlights there, one per line, each prefixed 'feature:' or 'fix:', so the welcome panel describes the binary it is in. A file left on main by an earlier revert does not count."
-            fail=1
-          elif ! git cat-file -e "HEAD:$notes" 2>/dev/null; then
-            echo "::error file=$notes::$notes was changed but does not exist at HEAD. This version's notes cannot be the file the PR deleted."
-            fail=1
-          elif [ -z "$(git show "HEAD:$notes" | tr -d '[:space:]')" ]; then
-            echo "::error file=$notes::$notes is empty. Write this version's highlights there, one per line, each prefixed 'feature:' or 'fix:'."
-            fail=1
-          fi
-          # A shipped release describes itself and nothing else: editing an
-          # older version's notes rewrites what a binary already out there
-          # claims to be.
-          stale="$(printf '%s\n' "$changed" | grep -E '^src/release_notes/[0-9.]+\.md$' | grep -v "^$notes$" || true)"
-          if [ -n "$stale" ]; then
-            echo "Notes for other versions were modified:"
-            printf '  %s\n' $stale
-            echo "::error::A release's notes describe that release. Only $notes may change in this PR."
             fail=1
           fi
           exit $fail

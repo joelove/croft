@@ -62,7 +62,7 @@ pub struct ExplorerViewsPrefs {
     pub folders: bool,
     #[serde(default = "default_true")]
     pub outline: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub timeline: bool,
     /// The DEPENDENCIES view. `alias` keeps configs written under the old
     /// Rust-only `rust_dependencies` key parsing into this generalized field.
@@ -84,7 +84,7 @@ impl Default for ExplorerViewsPrefs {
             open_editors: false,
             folders: true,
             outline: true,
-            timeline: true,
+            timeline: false,
             dependencies: true,
             agent_lane: true,
         }
@@ -1160,12 +1160,12 @@ mod tests {
         assert!(!loaded.timeline);
         assert!(loaded.folders);
         // A config written before the field existed parses to the VS Code
-        // defaults: Open Editors hidden, every other view shown.
+        // defaults: Open Editors and Timeline hidden, every other view shown.
         std::fs::write(&path, r#"{"theme":"dark"}"#).expect("write old config");
         let old = Prefs::load(&path).expect("load old").explorer_views;
         assert_eq!(old, ExplorerViewsPrefs::default());
         assert!(!old.open_editors);
-        assert!(old.folders && old.outline && old.timeline && old.dependencies);
+        assert!(old.folders && old.outline && !old.timeline && old.dependencies);
         // A config written under the pre-generalization `rust_dependencies` key
         // still drives the renamed `dependencies` field via the serde alias.
         std::fs::write(&path, r#"{"explorer_views":{"rust_dependencies":false}}"#)

@@ -2039,29 +2039,6 @@ def f() -> Config:\n\
         );
     }
 
-    /// The release note names the tags by hand, so it can promise one the
-    /// table does not carry - it shipped claiming OPTIMIZE, SAFETY and
-    /// REVIEW while `COMMENT_KEYWORDS` had seven entries. Tie the prose to
-    /// the code: every ALL-CAPS word the note lists must be a real tag.
-    #[test]
-    fn the_release_note_promises_only_tags_that_exist() {
-        let note = include_str!("release_notes/0.1.954.md");
-        let promised: Vec<&str> = note
-            .split(|c: char| !c.is_ascii_uppercase())
-            .filter(|w| w.len() >= 3)
-            .collect();
-        assert!(
-            promised.len() >= 5,
-            "the note should name several tags, found {promised:?}"
-        );
-        for word in promised {
-            assert!(
-                COMMENT_KEYWORDS.iter().any(|(kw, _)| *kw == word),
-                "the note promises {word}, which is not a highlighted tag"
-            );
-        }
-    }
-
     /// Every tag colour must be readable on the background its theme implies.
     /// The original fixed palette scored as low as 1.62:1 on Croft Light's
     /// white editor; WCAG AA wants 4.5:1 for body text. This pins both sets.

@@ -663,7 +663,7 @@ workspace can host instead; the losing window announces the refusal once per
 reason (a busy lock that becomes an unopenable one, or the reverse, is
 announced again) and keeps polling silently for takeover. Teardown on unseat
 runs on a detached thread so the 2s grace-kill never freezes the UI, and the
-exit paths (drop-to-local, self-update exec) reap the child synchronously
+exit paths (drop-to-local) reap the child synchronously
 first, then join every teardown a recent unseat detached — a thread that died
 with the process used to leave the claude child running. The claude binary
 resolves to an absolute path when off `PATH`, so a stripped GUI-launch

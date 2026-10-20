@@ -39,6 +39,9 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    // Only the `--restore-session` loader is wired now that the self-update
+    // relaunch is gone; kept with its producer for the handoff round-trip.
+    #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -82,6 +85,7 @@ impl SessionState {
 /// Per-pid scratch path for the session handoff file. Pid-scoping keeps
 /// two concurrent croft sessions on the same remote from clobbering each
 /// other's restore file.
+#[allow(dead_code)]
 pub fn handoff_path() -> PathBuf {
     let base = dirs_cache_croft();
     base.join(format!("session-{}.json", std::process::id()))

@@ -59,7 +59,6 @@ src/
 ├── provenance.rs         which SEAT wrote each line (`Seat` plus a per-buffer line map) for the gutter overlay and inline blame; the invariant is that a line croft did not watch being written is Unknown, never guessed
 ├── prefs.rs              durable user preferences (theme, layout chrome, format-on-save, auto-save) at `~/.config/croft/config.json` behind the "Preferences: Open Settings" hub; `host_accents` rules drive per-host terminal pane dressing
 ├── quick_select.rs       WezTerm-style quick-select pure core for the terminal pane (Ctrl+Shift+Space): a priority-ordered pattern set matched over soft-wrap-stitched logical lines, with home-row labels
-├── release_notes.rs      hand-curated "IN THIS RELEASE" highlights on the welcome panel; the text is DATA, one file per version in `src/release_notes/<version>.md`, baked in by `build.rs` — no git log, no network, and a missing file is a build error
 ├── remote.rs             remote (SSH) target metadata and launch dispatch, plus the ssh-pane re-root offer: `ssh_destination` parses a pane's foreground argv using ssh's own flag grammar
 ├── remote_bulk.rs       bulk lane for background installs: dedicated BatchMode SSH connection when key auth works (throttled shared mux otherwise) so update bytes never queue ahead of live-session keystrokes
 ├── remote_connect.rs    interactive SSH connect flow (host + password prompt phases) behind the connect dialog
@@ -74,7 +73,7 @@ src/
 ├── pair/local.rs         the navigator's local-model transport: one Anthropic-compatible `/v1/messages` streaming call per turn (Ollama, LM Studio, llama.cpp, vLLM), deliberately not the claude CLI; selected by `croft pair --provider ollama [--base-url <url>] --model <m>`
 ├── pair/proactive.rs     the proactive-look detector (pure text-in/row-out): tree-sitter judges that the driver completed a new construct since the navigator's last look; `App::tick_proactive_navigator` owns the gates and hands the seat a comment-only yield turn
 ├── pair_host.rs          the resident navigator's in-process host: the App spawns the pilot from the workspace's `<hash>.pair.json` record, drains `PairEvent`s per tick, and drives ask / yield turns
-├── session_state.rs     captures open tabs / layout so a self-update re-exec can restore them
+├── session_state.rs     captures open tabs / layout for the `--restore-session` handoff
 ├── sheet.rs             CSV / TSV / XLSX / XLS / XLSB / ODS parsing via the csv and calamine crates
 ├── shell_integration.rs  OSC 133 / 7 / 9 shell integration: `OscSniffer` intercepts the marks alacritty drops, plus the per-shell rc shims that emit them
 ├── snippets.rs           user snippets from `~/.config/croft/snippets.json` (VS Code format); `parse_body` turns tab-stop syntax into insert text plus ordered stops, and matches are injected into the completion popup; reloads on save
@@ -88,8 +87,6 @@ src/
 ├── triggers.rs           iTerm2-style terminal triggers from `~/.config/croft/triggers.json`: regex rules driving render-time `highlight`, plus `notify`/`bell` scanned in the PTY reader thread
 ├── agent_lane.rs         per-agent ledger of files an agent changed while you looked elsewhere; each row carries a review baseline content hash so it leaves the queue only once seen, and a write during two agents is flagged `shared` rather than guessed
 ├── agents.rs             agent lanes: which panes are running a coding agent (claude, codex, aider, gemini built in, extended by `~/.config/croft/agents.json`) and whether it is working, waiting or idle, judged from output stamps and prompt patterns rather than OSC 133 marks
-├── update_check.rs       release-availability check plus staged upgrade: once a day it asks GitHub's latest-release endpoint off-thread and offers Update / Later, staging into `~/.cache/croft/staged` so the binary on PATH is untouched until Relaunch; never automatic
-├── update_watch.rs      remote self-update: watch for a newer binary installed under a running remote croft
 ├── import_vscode.rs      one-shot VS Code profile import (`croft import-vscode`): settings, keybindings, snippets and the colour theme converted into croft's own files; merge never overwrite, and everything unmapped is REPORTED rather than dropped
 ├── marketplace.rs        fetching a theme from a marketplace: resolves an id or URL to an `ExtensionId`, downloads the `.vsix` and lifts one member out; nothing is installed or executed
 ├── vscode_theme.rs       VS Code colour theme import: converts a theme `.json` into a croft `[[themes]]` manifest under `~/.config/croft/extensions/`, behind `croft theme-import`
@@ -108,7 +105,6 @@ src/
 │   ├── nav.rs           editor back / forward navigation history
 │   ├── overlay.rs       inline-image overlay state + clear-on-hide latches (iTerm2 cell eviction; the Kitty path adds a delete-all on the same clear frames)
 │   ├── perf_hud.rs      F8 performance HUD
-│   ├── welcome.rs       welcome-screen state: the "IN THIS RELEASE" highlights, read synchronously from `release_notes::release_notes()` (no thread, no network)
 │   └── tests.rs         unit / integration tests
 ├── dap/                 debugger stack: Debug Adapter Protocol client. debugpy (Python, 3.14+, no fallback) is the verified mechanism; Rust/C/C++ route to lldb-dap; JS/TS route to vscode-js-debug; Go routes to delve (`dlv dap` over TCP, single-session, #264). Which file types each handles is a data-driven extension axis (see registry.rs)
 │   ├── mod.rs
@@ -1051,14 +1047,6 @@ The remote vetted index at `extensions.croft.software`. It fetches `index.json` 
 
 **Where the index lives.** It is git-hosted at `codeberg.org/vitali87/croft-extensions` and published to the VPS by a systemd timer mirroring croft-docs.
 
-### release_notes.rs
-
-Hand-curated "IN THIS RELEASE" highlights (feature or fix, glyph plus summary) shown on the welcome panel. The text is DATA: one file per version in `src/release_notes/<version>.md`, baked in by `build.rs` and parsed once. No git log, no network.
-
-**One file per version.** A single shared const sat on every open pull request's rebase path. A missing file for the current version is a BUILD error, so a binary always describes itself.
-
-**The card is sized before the logo.** `welcome_card_inner_width` is the one wrap width shared by the height measure and the paint pass, and the logo yields down to its 4-row minimum before the card may clip. The logo-first order kept a full-height logo above a note clipped mid-sentence in height-starved windows.
-
 ### run_debug.rs
 
 The Run and Debug sidebar widget: an empty-state Run [filename] button, and when a session is live the paused-state tree (call stack, expandable variables, WATCH), a debug console of program output, and a `❯` REPL prompt. The App builds the rows and maps clicks back to frames and variables.
@@ -1098,14 +1086,6 @@ SVG file-preview rasterisation: `usvg` parse plus `resvg` render into a PNG that
 Auto-detected project tasks. It reads the manifests the repo already has — `.vscode/tasks.json` with JSONC tolerated, Makefile, justfile, `package.json` with a lockfile-matched runner, `Cargo.toml`, `pyproject.toml` — into runnable `Task` commands, backing "Tasks: Run Task" and the Cmd+Shift+B default build. A `tasks.json` `isDefault` outranks the first build task.
 
 **Terminal-pane reuse is strict about the directory.** Each task runs in a named terminal pane that is reused only while its shell sits idle at EXACTLY the task's directory; a shell that has cd'd into a subdirectory is not reused. Where the platform cannot report a cwd at all (Android, a remote pane's ssh process), reuse falls back to the pane's name alone. The cwd is kernel-reported, and the write clears a half-typed prompt line first.
-
-### update_check.rs
-
-A release-availability check plus a staged upgrade. Once a day, tracked by the cache file `~/.cache/croft/update-check.json`, a local croft asks GitHub's latest-release endpoint off-thread; a newer, undismissed version raises a click-only popup at bottom-left offering Update or Later.
-
-**Update stages, it does not replace.** Update runs `cargo install croft-software --version X --root ~/.cache/croft/staged` in the background, so the binary on PATH is untouched and a fresh launch stays on the current version. The popup then offers Relaunch, which copies the staged binary over the installed one and re-execs — the same path F9 takes.
-
-**Never automatic.** Later remembers the version so it is not offered again, and `CROFT_NO_UPDATE_CHECK` disables the check entirely.
 
 ### voice.rs
 

@@ -186,40 +186,16 @@ legitimately and only the second to merge conflicts. Re-read
 ## Every shipped change is a release
 
 A PR that changes anything compiled into the binary (`src/`, `assets/`,
-`build.rs`, `Cargo.toml`, `Cargo.lock`) must also:
+`build.rs`, `Cargo.toml`, `Cargo.lock`) must also **bump `version` in
+`Cargo.toml`**: two different binaries must never share a version and differ
+only in commit hash.
 
-* **bump `version` in `Cargo.toml`** — two different binaries must never share
-  a version and differ only in commit hash, and
-* **write `src/release_notes/<version>.md`** — one file per version, named
-  for the version in `Cargo.toml`. The welcome panel's "IN THIS RELEASE" card
-  describes the single version it is baked into, so a missing or stale list
-  means the panel lies about what the running build ships.
-
-One highlight per line, each prefixed `feature:` or `fix:`, which selects the
-card's glyph and tint. Blank lines and `#` headings are ignored:
-
-```text
-feature: Cmd+F now searches a rendered colour log.
-fix: A copy larger than the cap no longer splits a character.
-```
-
-A missing file for the current version is a **build** error, not an empty
-panel, so a binary always describes itself.
-
-Notes live in one file per version rather than one shared file because two
-versions' notes never conflict in content, only in the file they shared: with
-several PRs open, every merge forced a rebase through it, and the version
-number had to be reserved by hand between contributors. Only the current
-version's file may change in a PR: an older one describes a release that has
-already shipped.
-
-CI enforces all of it (the `version bump + release notes` job). Docs, CI, and
-test-only PRs are exempt: `src/app/tests.rs` and `tests/` by path, and a `.rs`
-file whose diff touches nothing outside a `#[cfg(test)]` module, since most of
-croft's unit tests sit beside the code they cover and a change confined to them
-produces a byte-identical binary. Anything that filter is unsure about counts
-as shipped, so an unexpected bump request is the failure it prefers over a
-waived one.
+CI enforces it (the `version bump` job). Docs, CI, and test-only PRs are
+exempt: `src/app/tests.rs` and `tests/` by path, and a `.rs` file whose diff
+touches nothing outside a `#[cfg(test)]` module, since most of croft's unit
+tests sit beside the code they cover and a change confined to them produces a
+byte-identical binary. Anything that filter is unsure about counts as shipped,
+so an unexpected bump request is the failure it prefers over a waived one.
 
 ## Insert new items AFTER a complete item, never above a doc block
 

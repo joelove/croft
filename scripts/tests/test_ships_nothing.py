@@ -1,6 +1,6 @@
 """Tests for scripts/ships_nothing.py: the release gate's test-only filter.
 
-The `version bump + release notes` job says in its own comment that
+The `version bump` job says in its own comment that
 "test-only changes ship nothing and are exempt", and then encodes test-only
 as a path list. croft keeps most unit tests in a `#[cfg(test)] mod tests`
 beside the code they cover, so the ordinary shape of a test-only fix here is

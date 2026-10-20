@@ -249,18 +249,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          version="${tag#v}"
-          notes="src/release_notes/$version.md"
-          if [ -f "$notes" ]; then
-            gh release create "$tag" --title "$tag" --notes-file "$notes" \
-              dist/croft-*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sigstore.json
-          else
-            # Every shipped version has a notes file by the release-hygiene
-            # gate, so a missing one means the tag does not match any version
-            # that went through it. Say so rather than inventing a body.
-            echo "no src/release_notes/$version.md for tag $tag" >&2
-            exit 1
-          fi
+          gh release create "$tag" --title "$tag" --generate-notes \
+            dist/croft-*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sigstore.json
 
   homebrew:
     name: bump the Homebrew formula

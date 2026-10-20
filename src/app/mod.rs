@@ -33,7 +33,6 @@ mod nav;
 mod overlay;
 mod perf_hud;
 pub(crate) mod sidebar_dwell;
-mod welcome;
 use click::{ClickTracker, ModifiedClickTracker};
 use cursor_blink::CursorBlink;
 use fs_watch::FsWatch;
@@ -43,7 +42,6 @@ use nav::{NavHistory, NavLoc};
 use overlay::OverlayManager;
 use perf_hud::PerfHud;
 use sidebar_dwell::{AUTO_HIDE_DWELL, SidebarDwell};
-use welcome::WelcomeState;
 
 use crate::widgets::terminal::cwd_of_pid;
 
@@ -905,37 +903,6 @@ enum PairLockDenial {
     Io,
 }
 
-/// The bottom-left "a newer croft is available" popup (#333). Click-only
-/// like the port toast: it never takes a keystroke from the editor or a
-/// terminal. `ready` flips it from Update/Later to Relaunch once the staged
-/// build has landed.
-struct UpdateToast {
-    version: String,
-    ready: bool,
-    /// Action button hit rects, recomputed each render.
-    buttons: Vec<(Rect, UpdateToastAction)>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum UpdateToastAction {
-    /// Stage the new version in the background; nothing on PATH changes.
-    Update,
-    /// Dismiss, and never offer this version again.
-    Later,
-    /// Swap the staged binary in and re-exec - the only path that updates.
-    Relaunch,
-}
-
-/// Which producer an [`crate::update_watch::UpdateEvent`] came from: the
-/// remote install watcher, the drift rebuild, or the staged release build
-/// (#333). They share one event type and one status-bar state machine.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum UpdateSource {
-    Watch,
-    SelfInstall,
-    Staged,
-}
-
 /// A fenced block about to run (#353), parked behind the confirm popup.
 #[derive(Clone, Debug)]
 struct PendingRunBlock {
@@ -1032,16 +999,6 @@ fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// State of a background self-update observed by a remote-launched croft.
-/// `Idle` is the steady state; `InProgress` paints an "Updating" hint in
-/// the status bar; `Ready` arms the re-exec into the freshly-shipped binary.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum UpdateStatus {
-    Idle,
-    InProgress,
-    Ready,
-}
-
 /// What to do with one on-type formatting reply (#254). `NotOurs` leaves the
 /// armed request alone — a superseded reply must not disarm the newer one
 /// still in flight — while `Stale` and `Apply` both consume it.
@@ -1052,8 +1009,9 @@ enum OnTypeReply {
     Apply,
 }
 
-/// Rotating-arc frames for the in-progress update glyph. Cycled to read as a
-/// spinning circular arrow, the universal "working" indicator.
+/// Rotating-arc frames for the in-progress background-work glyph (problems
+/// fixes, extension commands). Cycled to read as a spinning circular arrow,
+/// the universal "working" indicator.
 const UPDATE_SPINNER_FRAMES: [&str; 6] = [
     "\u{25DC}", "\u{25E0}", "\u{25DD}", "\u{25DE}", "\u{25E1}", "\u{25DF}",
 ];
@@ -3132,7 +3090,6 @@ pub struct App {
     deps_scrollbar_drag: bool,
     testing_scrollbar_drag: bool,
     graph_scrollbar_drag: bool,
-    welcome: WelcomeState,
     /// One-shot background refresh of the remote extension index. Polled in the
     /// main loop; rebuilds the Extensions panel once if the verified cache
     /// changed. `None` once consumed (or on a disarmed build, immediately).
@@ -4170,62 +4127,6 @@ pub struct App {
     connect_dialog: Option<crate::widgets::connect_dialog::ConnectDialog>,
     connect_auth: Option<crate::remote_connect::SshAuth>,
     install_session: Option<crate::install_session::InstallSession>,
-    /// Background self-update watcher, present only on a remote-launched
-    /// croft (gated by `CROFT_REMOTE_AUTOUPDATE`). Polls the install-stamp
-    /// the local cross-build writes when it finishes shipping a newer
-    /// binary, so the running croft can re-exec into it in place.
-    update_watch: Option<crate::update_watch::UpdateWatch>,
-    /// True while this croft has stopped its language servers because a
-    /// source build of croft is compiling on the same host (#694), so the
-    /// servers are restarted once it ends. Only a remote-launched croft
-    /// ever sets it.
-    lsp_paused_for_build: bool,
-    /// When the build marker was last checked: it is a file read, so at
-    /// most once a second rather than every loop iteration.
-    build_marker_checked: Option<std::time::Instant>,
-    /// One-shot startup probe (#242): does the repo this binary was built
-    /// from now sit at a different commit/dirty state than the binary has
-    /// baked in? Local-only — a remote-launched croft is re-stamped by its
-    /// launcher instead. Dropped once its verdict is drained.
-    drift_probe: Option<crate::update_watch::DriftProbe>,
-    /// The repo's current hash label when the probe found drift ("def456",
-    /// "def456-dirty"). Arms the "F9 to rebuild" status-bar hint. Kept
-    /// through a running rebuild — the Idle guards hide the hint while it
-    /// runs, and a failure then re-arms F9 for a retry instead of
-    /// silently reverting the key to its breakpoint meaning.
-    local_drift: Option<String>,
-    /// Background `cargo install --path <repo>` reinstalling the local
-    /// croft after the user pressed F9 on a drift hint. Reported through
-    /// the same UpdateEvent lifecycle as the remote watcher.
-    self_install: Option<crate::update_watch::SelfInstall>,
-    /// One-shot startup check (#333): is a newer release published than
-    /// the version this binary carries? Local-only, throttled to a daily
-    /// network request by its cache file. Dropped once its verdict lands.
-    update_check: Option<crate::update_check::UpdateCheck>,
-    /// The "vX available" popup, present from the offer landing until the
-    /// user picks Update, Later, or (once staged) Relaunch.
-    update_toast: Option<UpdateToast>,
-    /// Whether this binary may update itself, or belongs to a package
-    /// manager that must do it (#375). Read once at startup.
-    install_source: crate::update_check::InstallSource,
-    /// A background `cargo install --root <cache>/staged` of the offered
-    /// release. Reported through the same UpdateEvent lifecycle as the
-    /// remote watcher; the binary on PATH is untouched until Relaunch.
-    staged_install: Option<crate::update_check::StagedInstall>,
-    /// The staged release build's own lifecycle (#333). `update_status`
-    /// belongs to the remote watcher and the drift rebuild; the two cells
-    /// are never written by the other's producer, so a rebuild starting or
-    /// failing after the release landed cannot disarm Relaunch, and the
-    /// reverse. Readers that mean "any update" consult both.
-    staged_status: UpdateStatus,
-    update_status: UpdateStatus,
-    /// When a background self-update is in progress, the instant it started.
-    /// Drives the spinning update glyph in the status bar (and the redraw
-    /// cadence that animates it). `None` whenever no update is running.
-    update_spinner_start: Option<std::time::Instant>,
-    /// Set when an update landed and croft should re-exec after the main
-    /// loop unwinds and the alt-screen is surrendered. Read by `run`.
-    pending_reexec: bool,
     overlays: OverlayManager,
     /// VS Code-style Cmd+F in-editor find overlay. None when closed.
     pub editor_find: Option<crate::widgets::editor_find::EditorFind>,
@@ -5050,51 +4951,9 @@ fn wrap_cells_variable_width(text: &str, first_width: u16, rest_width: u16) -> V
     }
 }
 
-/// Cells reserved at the left of each highlight row for the kind glyph plus
-/// a one-cell gap before the summary text.
-const WELCOME_NOTE_GUTTER: u16 = 2;
-
-fn welcome_note_summary_width(block_w: u16) -> u16 {
-    block_w.saturating_sub(WELCOME_NOTE_GUTTER).max(1)
-}
-
-fn wrapped_welcome_note_summary(
-    note: &crate::release_notes::ReleaseNote,
-    block_w: u16,
-) -> Vec<String> {
-    let w = welcome_note_summary_width(block_w);
-    wrap_cells_variable_width(note.summary, w, w)
-}
-
-fn welcome_note_row_height(note: &crate::release_notes::ReleaseNote, block_w: u16) -> u16 {
-    wrapped_welcome_note_summary(note, block_w).len().max(1) as u16
-}
-
-/// Width of the release-note card's content area for a card spanning
-/// `block_w` cells: one border cell plus a one-cell inset on each side.
-/// The height measure and the paint pass MUST both wrap through this —
-/// measuring 2 cells wider than the paint made the paint produce more
-/// wrapped lines than the card reserved rows for, and the overflow rows
-/// were silently dropped, ending the note mid-sentence (#99).
-fn welcome_card_inner_width(block_w: u16) -> u16 {
-    block_w.saturating_sub(4)
-}
-
-fn welcome_recents_height(notes: &[crate::release_notes::ReleaseNote], block_w: u16) -> u16 {
-    if notes.is_empty() {
-        return 0;
-    }
-    // Header row + one blank row + each highlight (which may wrap).
-    let notes_h: u16 = notes
-        .iter()
-        .map(|n| welcome_note_row_height(n, block_w))
-        .sum();
-    1 + 1 + notes_h
-}
-
 const WELCOME_TAGLINE: &str = "LIGHTWEIGHT.  BLAZINGLY FAST.  BUILT FOR DEVELOPERS.";
 
-use crate::gradient::{GRAD_TL, GRAD_TR, POPUP_SEL_BG, paint_gradient_box, rgb_color};
+use crate::gradient::{GRAD_TL, POPUP_SEL_BG, paint_gradient_box, rgb_color};
 
 fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -5300,7 +5159,6 @@ impl App {
         // Control click.
         let git = GitWorker::spawn(root.clone());
 
-        let welcome = WelcomeState::new();
         let ext_index_refresh = Some(crate::mcp::registry_index::spawn_refresh());
 
         let (search_query_tx, search_query_rx) = std::sync::mpsc::channel();
@@ -5522,7 +5380,6 @@ impl App {
             deps_scrollbar_drag: false,
             testing_scrollbar_drag: false,
             graph_scrollbar_drag: false,
-            welcome,
             ext_index_refresh,
             codeql_program: PathBuf::from("codeql"),
             codeql_run: None,
@@ -5751,20 +5608,6 @@ impl App {
             connect_dialog: None,
             connect_auth: None,
             install_session: None,
-            update_watch: None,
-            lsp_paused_for_build: false,
-            build_marker_checked: None,
-            drift_probe: None,
-            local_drift: None,
-            self_install: None,
-            update_check: None,
-            update_toast: None,
-            install_source: crate::update_check::current_install_source(),
-            staged_install: None,
-            staged_status: UpdateStatus::Idle,
-            update_status: UpdateStatus::Idle,
-            update_spinner_start: None,
-            pending_reexec: false,
             overlays: {
                 let mut overlays = OverlayManager::default();
                 overlays.welcome.mark_dirty();
@@ -14204,47 +14047,17 @@ impl App {
         //   [tagline]
         //   [gradient box: header + release highlights]
         //   [footer chevron line]
-        let block_left = area.x + area.width / 8;
-        let block_right = area.x + area.width - area.width / 8;
-        let block_w = block_right.saturating_sub(block_left);
-        let has_recent_panel = self.welcome.has_recent_panel();
-        let recents_inner_h =
-            welcome_recents_height(self.welcome.notes(), welcome_card_inner_width(block_w));
         let tagline_h = 1u16;
-        let footer_h = 1u16;
-        // Gaps: blank row after logo, after tagline, after box.
-        let gaps_h = 3u16;
+        // Gaps: blank row after the logo, then after the tagline.
+        let gaps_h = 2u16;
 
         let logo_max_w = (area.width as u32).saturating_sub(4) as u16;
         let logo_w_cells = logo_max_w.clamp(8, 48);
-        // Box content needs at least the 4-cell border+inset envelope to be
-        // worth drawing.
-        let desired_box_h = if has_recent_panel {
-            recents_inner_h.saturating_add(4)
-        } else {
-            0
-        };
-        // Size the card first, then give the logo whatever remains (still
-        // capped to its 4..14 band, so the stack can never overrun the
-        // fixed-size ratatui buffer). The release note is the panel's
-        // information and the logo is decoration: in a height-starved
-        // welcome area (a 40-row window with the terminal panel open) the
-        // old logo-first order kept a full 14-row logo above a card that
-        // was clipped mid-sentence or dropped entirely (#99).
-        let logo_h_cells = area
-            .height
-            .saturating_sub(tagline_h + footer_h + gaps_h)
-            .saturating_sub(desired_box_h)
-            .clamp(4, 14);
-        let used_above_box = logo_h_cells + 1 + tagline_h + 1; // logo, gap, tagline, gap
-        let used_below_box = 1 + footer_h; // gap, footer
-        let max_box_h = area
-            .height
-            .saturating_sub(used_above_box)
-            .saturating_sub(used_below_box);
-        let box_h = desired_box_h.min(max_box_h);
-
-        let total_h = used_above_box + box_h + used_below_box;
+        // Give the logo whatever height remains after the tagline and gaps,
+        // capped to its 4..14 band so the stack can never overrun the
+        // fixed-size ratatui buffer.
+        let logo_h_cells = area.height.saturating_sub(tagline_h + gaps_h).clamp(4, 14);
+        let total_h = logo_h_cells + 1 + tagline_h;
         let block_top = area.y + area.height.saturating_sub(total_h) / 2;
         let logo_x = area.x + area.width.saturating_sub(logo_w_cells) / 2;
         let logo_y = block_top;
@@ -14392,117 +14205,6 @@ impl App {
                 WELCOME_TAGLINE,
                 Style::default().fg(self.theme.ui(Color::Rgb(0x88, 0xc0, 0xd0))),
             );
-        }
-
-        let box_y = tagline_y + tagline_h + 1;
-        if has_recent_panel && box_h >= 4 && block_w >= 4 && box_y + box_h <= area_max_y {
-            let box_rect = Rect {
-                x: block_left,
-                y: box_y,
-                width: block_w,
-                height: box_h,
-            };
-            if self.theme.is_light() {
-                // The brand gradient's teal leg washes out on white; paint
-                // the card border in the light widget-border grey instead.
-                let border = Style::default().fg(self.theme.ui(Color::Rgb(0x3b, 0x42, 0x52)));
-                let b = frame.buffer_mut();
-                for x in box_rect.x..box_rect.x + box_rect.width {
-                    b.set_string(x, box_rect.y, "\u{2500}", border);
-                    b.set_string(x, box_rect.y + box_rect.height - 1, "\u{2500}", border);
-                }
-                for y in box_rect.y..box_rect.y + box_rect.height {
-                    b.set_string(box_rect.x, y, "\u{2502}", border);
-                    b.set_string(box_rect.x + box_rect.width - 1, y, "\u{2502}", border);
-                }
-                b.set_string(box_rect.x, box_rect.y, "\u{256d}", border);
-                b.set_string(
-                    box_rect.x + box_rect.width - 1,
-                    box_rect.y,
-                    "\u{256e}",
-                    border,
-                );
-                b.set_string(
-                    box_rect.x,
-                    box_rect.y + box_rect.height - 1,
-                    "\u{2570}",
-                    border,
-                );
-                b.set_string(
-                    box_rect.x + box_rect.width - 1,
-                    box_rect.y + box_rect.height - 1,
-                    "\u{256f}",
-                    border,
-                );
-            } else {
-                paint_gradient_box(frame.buffer_mut(), box_rect);
-            }
-
-            // Inner content area: 1-cell inset from each border. The width
-            // comes from the same helper the height measure used, so the
-            // wrap below reproduces exactly the line count the card
-            // reserved rows for (#99).
-            let inner_x = box_rect.x + 2;
-            let inner_y = box_rect.y + 1;
-            let inner_w_actual = welcome_card_inner_width(box_rect.width);
-
-            let row_style = Style::default().fg(self.theme.ui(Color::Rgb(0xc5, 0xcd, 0xd9)));
-
-            // Header row: "> IN THIS RELEASE (vX.Y.Z)". The leading chevron
-            // echoes the cr<>ft wordmark's bracket. The highlights below are
-            // hand-curated data baked into this build (see
-            // `crate::release_notes`), so the heading names the exact version.
-            let header_y = inner_y;
-            frame.buffer_mut().set_string(
-                inner_x,
-                header_y,
-                "> ",
-                Style::default()
-                    .fg(self.theme.ui(rgb_color(GRAD_TR)))
-                    .add_modifier(Modifier::BOLD),
-            );
-            frame.buffer_mut().set_string(
-                inner_x + 2,
-                header_y,
-                format!("IN THIS RELEASE (v{})", env!("CARGO_PKG_VERSION")),
-                Style::default()
-                    .fg(self.theme.ui(Color::White))
-                    .add_modifier(Modifier::BOLD),
-            );
-
-            // Each highlight: a kind glyph in the gutter (rocket = new feature,
-            // bug = fix) tinted by kind, then the wrapped one-line summary.
-            // Continuation lines align under the summary, leaving the gutter
-            // clear so the glyph reads as a single bullet.
-            let summary_x = inner_x + WELCOME_NOTE_GUTTER;
-            let summary_w = inner_w_actual.saturating_sub(WELCOME_NOTE_GUTTER);
-            let last_row = box_rect.y + box_rect.height - 1;
-            let mut row_y = header_y + 2;
-            for note in self.welcome.notes() {
-                if row_y >= last_row {
-                    break;
-                }
-                frame.buffer_mut().set_string(
-                    inner_x,
-                    row_y,
-                    note.kind.icon(),
-                    Style::default()
-                        .fg(note.kind.color())
-                        .add_modifier(Modifier::BOLD),
-                );
-                let lines = wrapped_welcome_note_summary(note, inner_w_actual);
-                for (line_idx, line) in lines.iter().enumerate() {
-                    let line_y = row_y + line_idx as u16;
-                    if line_y >= last_row {
-                        break;
-                    }
-                    let clipped: String = line.chars().take(summary_w as usize).collect();
-                    frame
-                        .buffer_mut()
-                        .set_string(summary_x, line_y, clipped, row_style);
-                }
-                row_y = row_y.saturating_add(lines.len().max(1) as u16);
-            }
         }
     }
 
@@ -18798,49 +18500,6 @@ impl App {
         if let Some(span) = self.perf.status_span() {
             spans.push(span);
         }
-        if self.any_update_ready() {
-            spans.push(Span::styled(
-                " ⟳ Update ready - F9 to relaunch ",
-                Style::default()
-                    .bg(self.theme.ui(Color::Rgb(0x1f, 0x7a, 0x33)))
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        if let Some(current) = self.local_drift.as_ref()
-            && self.update_status == UpdateStatus::Idle
-            && self.self_install.is_none()
-            // The same latch as `f9_update_armed`: while the staged release
-            // builds, F9 is not a rebuild, so the hint must not say so.
-            && self.staged_status != UpdateStatus::InProgress
-            && self.staged_install.is_none()
-        {
-            // Amber, persistent: the binary predates its own source tree
-            // (#242). One keypress rebuilds it in the background.
-            spans.push(Span::styled(
-                format!(
-                    " ⟳ croft {} < repo {current} - F9 to rebuild ",
-                    env!("CROFT_GIT_HASH")
-                ),
-                Style::default()
-                    .bg(self.theme.ui(Color::Rgb(0x8a, 0x60, 0x00)))
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        if self.any_update_in_progress() {
-            // Red + a spinning circular-arrow glyph to draw the eye to the
-            // in-progress background update.
-            spans.push(Span::styled(
-                format!(
-                    " {} Updating croft in the background ",
-                    self.update_spinner_glyph()
-                ),
-                Style::default()
-                    .fg(self.theme.ui(Color::Rgb(0xff, 0x45, 0x4d)))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
         if let Some(progress) = self.lsp_progress_status() {
             // A busy language server (rust-analyzer priming its crate graph,
             // etc.) is otherwise invisible: hover/completion just return empty
@@ -19330,7 +18989,6 @@ impl App {
             }
         }
         self.render_port_toast(frame);
-        self.render_update_toast(frame);
         self.render_tour_caption(frame);
         self.render_context_menu(frame);
         self.render_commit_dropdown(frame);
@@ -20404,131 +20062,6 @@ impl App {
             bx += w + 1;
         }
         if let Some(t) = self.port_toast.as_mut() {
-            t.buttons = rects;
-        }
-    }
-
-    /// Paint the update-available popup in the bottom-LEFT corner (the
-    /// port toast owns the right) and record its button rects. Click-only,
-    /// like the port toast: it never captures keystrokes (#333).
-    fn render_update_toast(&mut self, frame: &mut ratatui::Frame) {
-        let Some(toast) = self.update_toast.as_ref() else {
-            return;
-        };
-        let version = toast.version.clone();
-        let ready = toast.ready;
-        let staging = self.staged_status == UpdateStatus::InProgress && !ready;
-        let accent = self.theme.accent();
-        let btn_bg = self.theme.button();
-        let brew = self.install_source == crate::update_check::InstallSource::Homebrew;
-        let actions: Vec<(String, UpdateToastAction)> = if ready {
-            vec![(" Relaunch ".to_string(), UpdateToastAction::Relaunch)]
-        } else if staging {
-            Vec::new()
-        } else if brew {
-            // Homebrew upgrades it (#375); the popup can only name the
-            // command and be dismissed.
-            vec![(" Later ".to_string(), UpdateToastAction::Later)]
-        } else {
-            vec![
-                (" Update ".to_string(), UpdateToastAction::Update),
-                (" Later ".to_string(), UpdateToastAction::Later),
-            ]
-        };
-        let title_line = if ready {
-            format!("\u{27f3} croft v{version} is ready - relaunch to update")
-        } else if staging {
-            format!(
-                "{} building croft v{version} in the background",
-                self.update_spinner_glyph()
-            )
-        } else if brew {
-            format!(
-                "\u{27f3} croft v{version} is available - run `{}`",
-                crate::update_check::BREW_UPGRADE
-            )
-        } else {
-            format!(
-                "\u{27f3} croft v{version} is available (you have v{})",
-                env!("CARGO_PKG_VERSION")
-            )
-        };
-        let buttons_w: u16 = actions
-            .iter()
-            .map(|(l, _)| l.chars().count() as u16 + 1)
-            .sum::<u16>()
-            + 1;
-        let inner_w = buttons_w.max(title_line.chars().count() as u16);
-        let area = frame.area();
-        let width = (inner_w + 4).min(area.width.saturating_sub(2));
-        let height: u16 = 4;
-        let status_h: u16 = if self.status_bar_visible { 1 } else { 0 };
-        // The port toast owns the bottom-right band; at ordinary widths
-        // this popup's title reaches into it, so stack above it instead.
-        let stack: u16 = if self.port_toast.is_some() { height } else { 0 };
-        if area.width < width + 2 || area.height < height + status_h + 1 + stack {
-            return;
-        }
-        let rect = Rect {
-            x: area.x + 1,
-            y: area.y + area.height - height - status_h - 1 - stack,
-            width,
-            height,
-        };
-        let block = ratatui::widgets::Block::default()
-            .borders(ratatui::widgets::Borders::ALL)
-            .border_style(Style::default().fg(accent))
-            .style(Style::default().bg(self.theme.editor_bg()))
-            .title(ratatui::text::Span::styled(
-                " UPDATE ",
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ));
-        frame.render_widget(ratatui::widgets::Clear, rect);
-        frame.render_widget(block, rect);
-        let inner = Rect {
-            x: rect.x + 2,
-            y: rect.y + 1,
-            width: rect.width.saturating_sub(4),
-            height: rect.height.saturating_sub(2),
-        };
-        let buf = frame.buffer_mut();
-        buf.set_stringn(
-            inner.x,
-            inner.y,
-            &title_line,
-            inner.width as usize,
-            Style::default().fg(self.theme.ui(Color::Rgb(0xCC, 0xCC, 0xCC))),
-        );
-        let mut bx = inner.x;
-        let by = inner.y + 1;
-        let mut rects: Vec<(Rect, UpdateToastAction)> = Vec::new();
-        for (label, action) in &actions {
-            let w = label.chars().count() as u16;
-            if bx + w > inner.x + inner.width {
-                break;
-            }
-            buf.set_stringn(
-                bx,
-                by,
-                label,
-                w as usize,
-                Style::default()
-                    .fg(Color::White)
-                    .bg(btn_bg)
-                    .add_modifier(Modifier::BOLD),
-            );
-            rects.push((
-                Rect {
-                    x: bx,
-                    y: by,
-                    width: w,
-                    height: 1,
-                },
-                *action,
-            ));
-            bx += w + 1;
-        }
-        if let Some(t) = self.update_toast.as_mut() {
             t.buttons = rects;
         }
     }
@@ -21635,8 +21168,8 @@ impl App {
         // A bare F5/F9/F10/F11 pressed while the terminal pane is focused and
         // no debug session is live belongs to the app running in the shell
         // (process-compose's F10 Quit, htop's F9 kill), so it falls through to
-        // the PTY instead of dying as a debugger no-op. Modified chords and a
-        // ready update's F9 re-exec keep their croft meaning everywhere.
+        // the PTY instead of dying as a debugger no-op. Modified chords keep
+        // their croft meaning everywhere.
         let terminal_owns_fkeys = self.focus == Pane::Terminal
             && matches!(self.bottom_panel_tab, BottomPanelTab::Terminal)
             && self.debug_sessions.is_empty()
@@ -21673,7 +21206,7 @@ impl App {
             self.switch_debug_session();
             return Ok(());
         }
-        if matches!(key.code, KeyCode::F(9)) && !(terminal_owns_fkeys && !self.f9_update_armed()) {
+        if matches!(key.code, KeyCode::F(9)) && !terminal_owns_fkeys {
             if key.modifiers.contains(KeyModifiers::SHIFT)
                 && key.modifiers.contains(KeyModifiers::ALT)
             {
@@ -21686,20 +21219,6 @@ impl App {
             } else if key.modifiers.contains(KeyModifiers::ALT) {
                 // Alt+F9: toggle break-on-raised-exceptions.
                 self.debug_toggle_raised_exceptions();
-            } else if self.any_update_ready() {
-                // A background update has landed (a staged release, the
-                // drift rebuild, or a remote install): bare F9 re-execs
-                // into it. `run()` swaps the staged binary in first when
-                // that is the one that landed.
-                self.arm_reexec();
-            } else if self.f9_update_armed() && self.update_status == UpdateStatus::Idle {
-                // The drift hint is armed (#242): bare F9 rebuilds and
-                // reinstalls the local croft in the background.
-                self.start_local_reinstall();
-            } else if self.self_install.is_some() {
-                // A rebuild is already in flight (second F9 of an input
-                // batch, or pressed again mid-install): swallow it -
-                // toggling a breakpoint here is never what was meant.
             } else {
                 self.debug_toggle_breakpoint();
             }
@@ -34656,9 +34175,8 @@ impl App {
             .iter()
             .position(|t| pane_is_idle_at(t, &pane_name, &root))
         {
-            // Reused panes may be folded (#313): the release notes name the
-            // build pane as the thing you would fold, and a task written into
-            // a pane that is never rendered runs invisibly under a status line
+            // Reused panes may be folded (#313): a task written into a pane
+            // that is never rendered runs invisibly under a status line
             // saying it started.
             self.reveal_terminal_pane(idx);
             self.terminals[idx].write_input(command.as_bytes());
@@ -38003,422 +37521,6 @@ impl App {
         changed
     }
 
-    /// Start the background self-update watcher on a remote-launched croft.
-    /// No-op unless `CROFT_REMOTE_AUTOUPDATE` is set (it is, by the remote
-    /// launch command) and an install-stamp exists to compare against.
-    fn start_update_watch_if_remote(&mut self) {
-        if std::env::var_os("CROFT_REMOTE_AUTOUPDATE").is_none() {
-            return;
-        }
-        let cache_dir = croft_cache_dir();
-        let launch_stamp = std::fs::read_to_string(cache_dir.join("install-stamp"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        self.update_watch = Some(crate::update_watch::UpdateWatch::start(
-            cache_dir,
-            launch_stamp,
-        ));
-    }
-
-    /// Stop the language servers while croft compiles itself on this host,
-    /// and start them again once it is done (#694).
-    ///
-    /// The remote source build writes a marker while it runs. On an 8 GB
-    /// host a compile next to rust-analyzer exhausted memory, and the OOM
-    /// killer then took whatever was largest — croft, or a terminal pane.
-    /// Only a remote-launched croft watches: the build is the fallback of
-    /// `croft remote`'s update, and a local croft never runs one under it.
-    fn poll_source_build_marker(&mut self) -> bool {
-        if self.update_watch.is_none() {
-            return false;
-        }
-        let now = std::time::Instant::now();
-        if self
-            .build_marker_checked
-            .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1))
-        {
-            return false;
-        }
-        self.build_marker_checked = Some(now);
-        let building = crate::update_watch::source_build_running(
-            &croft_cache_dir(),
-            crate::update_watch::boot_id,
-            crate::update_watch::boot_time,
-            process_is_alive,
-        );
-        self.apply_source_build_state(building)
-    }
-
-    /// Pause or resume the language servers for a source build that has
-    /// started (`true`) or ended (`false`). Split from the polling so tests
-    /// drive it without a marker file or the 1 Hz gate.
-    fn apply_source_build_state(&mut self, building: bool) -> bool {
-        match (building, self.lsp_paused_for_build) {
-            (true, false) => {
-                // Nothing running is nothing to pause, and nothing to restart
-                // later either: a manager that failed to start stays down.
-                if self.lsp.is_none() {
-                    return false;
-                }
-                // Dropping the manager shuts its servers down, which is what
-                // frees the memory. Its Drop waits up to 3 s for them, so it
-                // runs off the UI thread: nothing the user did asked for a
-                // freeze (the build script waits long enough for it).
-                if let Some(old) = self.lsp.take() {
-                    fs_watch::offload_drop(old);
-                }
-                self.lsp_paused_for_build = true;
-                // A format-on-save in flight dies with the manager, and its
-                // armed save would otherwise fire on some later, unrelated
-                // format reply. Save now, unformatted, as when a reply fails.
-                if self.format_request_id.take().is_some() {
-                    self.complete_pending_save();
-                }
-                // Re-open every tab against the servers that come back. The
-                // diagnostics are kept: they are still the best answer until
-                // the restarted servers publish fresh ones.
-                self.lsp_last_seen.clear();
-                self.lsp_progress.clear();
-                let msg = "Language servers stopped while croft builds its update on this host";
-                crate::output::push("Language Servers", crate::output::OutputLevel::Info, msg);
-                self.status = String::from(msg);
-                true
-            }
-            (false, true) => {
-                self.lsp_paused_for_build = false;
-                self.lsp = match crate::lsp::LspManager::new(self.workspace_root().to_path_buf()) {
-                    Ok(m) => {
-                        m.set_extra_roots(
-                            self.roots.iter().skip(1).map(Path::to_path_buf).collect(),
-                        );
-                        crate::output::push(
-                            "Language Servers",
-                            crate::output::OutputLevel::Info,
-                            "Update build finished; language servers restarted",
-                        );
-                        Some(m)
-                    }
-                    Err(e) => {
-                        let msg = format!("Language servers could not restart: {e}");
-                        crate::output::push(
-                            "Language Servers",
-                            crate::output::OutputLevel::Error,
-                            &msg,
-                        );
-                        self.status = msg;
-                        None
-                    }
-                };
-                self.lsp_last_seen.clear();
-                self.lsp_progress.clear();
-                // The new manager numbers semantic replies from 0 again; the
-                // old high-water marks would reject every reply for a file
-                // until the new count caught up with the old one.
-                self.semantic_generation_seen.clear();
-                // A tab closed during the pause was never in `lsp_last_seen`
-                // again, so nothing would drop its diagnostics: drop what no
-                // open buffer owns. That includes workspace-scope diagnostics
-                // for files never opened, which the old servers published
-                // unasked; the new servers publish those again as they index,
-                // and until then keeping them would show findings nothing can
-                // retract.
-                let open = self.open_buffer_paths();
-                self.lsp_diagnostics.retain(|p, _| open.contains(p));
-                self.rebuild_problems();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Start the one-shot local drift probe (#242) on a locally-launched
-    /// croft. A remote-launched croft skips it: its binary is re-stamped by
-    /// the launching machine on every connect, and its baked manifest dir
-    /// points at a tree on another box anyway.
-    fn start_drift_probe_if_local(&mut self) {
-        if std::env::var_os("CROFT_REMOTE_AUTOUPDATE").is_some() {
-            return;
-        }
-        self.drift_probe = Some(crate::update_watch::DriftProbe::start(
-            String::from(env!("CARGO_MANIFEST_DIR")),
-            String::from(env!("CROFT_GIT_HASH_FULL")),
-        ));
-    }
-
-    /// Start the release-availability check (#333) on a locally-launched
-    /// croft. A remote-launched croft is shipped by its launcher; a build
-    /// with `CROFT_NO_UPDATE_CHECK` set in the environment never asks.
-    fn start_update_check_if_local(&mut self) {
-        if std::env::var_os("CROFT_REMOTE_AUTOUPDATE").is_some()
-            || std::env::var_os("CROFT_NO_UPDATE_CHECK").is_some()
-        {
-            return;
-        }
-        self.update_check = Some(crate::update_check::UpdateCheck::start(
-            croft_cache_dir(),
-            String::from(env!("CARGO_PKG_VERSION")),
-        ));
-    }
-
-    /// Raise the popup when the check finds a newer, undismissed release.
-    /// The check is dropped either way - it only ever answers once.
-    fn poll_update_check(&mut self) -> bool {
-        let Some(check) = self.update_check.as_ref() else {
-            return false;
-        };
-        let Some(verdict) = check.take() else {
-            return false;
-        };
-        self.update_check = None;
-        let Some(version) = verdict else {
-            return false;
-        };
-        self.update_toast = Some(UpdateToast {
-            version,
-            ready: false,
-            buttons: Vec::new(),
-        });
-        true
-    }
-
-    /// Kick off the staged build the popup offered. The existing update
-    /// state machine takes it from here: spinner while cargo runs, then
-    /// the popup and the status bar both offer Relaunch.
-    fn start_staged_update(&mut self, version: String) {
-        // Homebrew owns a Cellar binary (#375): staging and swapping it
-        // would leave brew's records describing a file croft replaced.
-        if self.install_source == crate::update_check::InstallSource::Homebrew {
-            self.status = format!(
-                "croft v{version} is available - this install is managed by Homebrew: run `{}`",
-                crate::update_check::BREW_UPGRADE
-            );
-            return;
-        }
-        self.staged_status = UpdateStatus::Idle;
-        self.staged_install = Some(crate::update_check::StagedInstall::start(
-            croft_cache_dir(),
-            version,
-            staged_install_log_path(),
-        ));
-    }
-
-    /// Decline the offered version for good (until a newer one appears).
-    fn dismiss_update_offer(&mut self, version: &str) {
-        if let Err(e) = crate::update_check::dismiss(&croft_cache_dir(), version) {
-            self.status = format!("Could not remember the dismissed update: {e}");
-        }
-    }
-
-    /// The staged binary waiting to be swapped in, once its build landed.
-    fn staged_update_binary(&self) -> Option<PathBuf> {
-        let install = self.staged_install.as_ref()?;
-        (self.staged_status == UpdateStatus::Ready).then(|| install.binary().to_path_buf())
-    }
-
-    /// Whether any producer has an update ready to re-exec into: the
-    /// status-bar pill and bare F9 mean "any".
-    fn any_update_ready(&self) -> bool {
-        self.update_status == UpdateStatus::Ready || self.staged_status == UpdateStatus::Ready
-    }
-
-    /// Whether any producer is mid-build (drives the spinner).
-    fn any_update_in_progress(&self) -> bool {
-        self.update_status == UpdateStatus::InProgress
-            || self.staged_status == UpdateStatus::InProgress
-    }
-
-    /// Arm the rebuild hint when the drift probe's verdict lands. The probe
-    /// is dropped either way — it only ever answers once.
-    fn poll_drift_probe(&mut self) -> bool {
-        let Some(probe) = self.drift_probe.as_ref() else {
-            return false;
-        };
-        let Some(verdict) = probe.take() else {
-            return false;
-        };
-        self.drift_probe = None;
-        let Some(current) = verdict else {
-            return false;
-        };
-        self.status = format!(
-            "This croft was built at {}, but its repo is now at {current} - press F9 to rebuild & reinstall in the background",
-            env!("CROFT_GIT_HASH"),
-        );
-        self.local_drift = Some(current);
-        true
-    }
-
-    /// Kick off the background reinstall the drift hint offered. The
-    /// existing update state machine takes it from here: spinner while
-    /// `cargo install` runs, then the same "F9 to relaunch" flow a remote
-    /// background update uses.
-    fn start_local_reinstall(&mut self) {
-        self.self_install = Some(crate::update_watch::SelfInstall::start(
-            String::from(env!("CARGO_MANIFEST_DIR")),
-            self_install_log_path(),
-        ));
-    }
-
-    /// True when bare F9 is claimed by the update flow: either a landed
-    /// update waiting to re-exec, or an armed drift hint waiting to rebuild.
-    fn f9_update_armed(&self) -> bool {
-        self.any_update_ready()
-            || (self.local_drift.is_some()
-                && self.update_status == UpdateStatus::Idle
-                && self.staged_status != UpdateStatus::InProgress
-                // `update_status` only leaves Idle when the InProgress event
-                // is drained - once per outer loop, BEFORE the input drain -
-                // so without this latch two F9s in one crossterm batch spawn
-                // two concurrent `cargo install`s racing cargo's locks
-                // (#245). The staged release build holds the same cargo
-                // lock, so it latches F9 the same way.
-                && self.self_install.is_none()
-                && self.staged_install.is_none())
-    }
-
-    pub fn poll_update_watch(&mut self) -> bool {
-        let mut changed = self.poll_drift_probe();
-        changed |= self.poll_source_build_marker();
-        changed |= self.poll_update_check();
-        // Three producers share one event vocabulary; each event keeps its
-        // origin so a drift rebuild's failure is never charged to the
-        // staged release build (or the reverse).
-        let mut events: Vec<(UpdateSource, crate::update_watch::UpdateEvent)> = Vec::new();
-        if let Some(watch) = self.update_watch.as_ref() {
-            events.extend(watch.drain().into_iter().map(|e| (UpdateSource::Watch, e)));
-        }
-        if let Some(install) = self.self_install.as_ref() {
-            events.extend(
-                install
-                    .drain()
-                    .into_iter()
-                    .map(|e| (UpdateSource::SelfInstall, e)),
-            );
-        }
-        if let Some(staged) = self.staged_install.as_ref() {
-            events.extend(
-                staged
-                    .drain()
-                    .into_iter()
-                    .map(|e| (UpdateSource::Staged, e)),
-            );
-        }
-        for (source, ev) in events {
-            changed = true;
-            // Each producer writes ITS cell; the other cell is never
-            // touched, so nothing one build does can strand the other's
-            // landed binary (there is exactly one Ready per channel).
-            let staged = source == UpdateSource::Staged;
-            match ev {
-                crate::update_watch::UpdateEvent::InProgress => {
-                    if staged {
-                        self.staged_status = UpdateStatus::InProgress;
-                    } else {
-                        self.update_status = UpdateStatus::InProgress;
-                    }
-                    // The dedicated red, spinning status-bar span renders the
-                    // message now, so the generic status line stays clear.
-                    self.update_spinner_start = Some(std::time::Instant::now());
-                    self.status.clear();
-                }
-                crate::update_watch::UpdateEvent::Failed => {
-                    if staged {
-                        self.staged_status = UpdateStatus::Idle;
-                    } else {
-                        self.update_status = UpdateStatus::Idle;
-                    }
-                    if !self.any_update_in_progress() {
-                        self.update_spinner_start = None;
-                    }
-                    self.status = match source {
-                        UpdateSource::Staged => {
-                            let version = self
-                                .staged_install
-                                .take()
-                                .map(|s| s.version)
-                                .unwrap_or_default();
-                            // The offer stays declinable: the popup comes
-                            // back so a retry or Later is one click away -
-                            // unless the user already said Later to this
-                            // version in an earlier session.
-                            let dismissed =
-                                crate::update_check::CheckCache::load(&croft_cache_dir())
-                                    .dismissed
-                                    .as_deref()
-                                    == Some(version.as_str());
-                            if !dismissed {
-                                self.update_toast = Some(UpdateToast {
-                                    version: version.clone(),
-                                    ready: false,
-                                    buttons: Vec::new(),
-                                });
-                            }
-                            format!(
-                                "croft {version} could not be built - see {} (still on v{})",
-                                staged_install_log_path().display(),
-                                env!("CARGO_PKG_VERSION")
-                            )
-                        }
-                        UpdateSource::SelfInstall => {
-                            self.self_install = None;
-                            format!(
-                                "croft rebuild failed - see {} (still on the old binary)",
-                                self_install_log_path().display()
-                            )
-                        }
-                        UpdateSource::Watch => String::from(
-                            "Background croft update failed; staying on current version",
-                        ),
-                    };
-                }
-                crate::update_watch::UpdateEvent::Ready => {
-                    if staged {
-                        self.staged_status = UpdateStatus::Ready;
-                    } else {
-                        self.update_status = UpdateStatus::Ready;
-                    }
-                    if !self.any_update_in_progress() {
-                        self.update_spinner_start = None;
-                    }
-                    // Do NOT yank the user mid-work: surface a persistent
-                    // "Update ready - F9 to relaunch" prompt in the status
-                    // bar and let them pick the moment. The re-exec only
-                    // fires when they press F9 (handle_key) or click
-                    // Relaunch on the popup (#333).
-                    self.status = String::from(
-                        "Update ready - press F9 to relaunch croft (terminals will reset)",
-                    );
-                    if staged && let Some(install) = self.staged_install.as_ref() {
-                        self.update_toast = Some(UpdateToast {
-                            version: install.version.clone(),
-                            ready: true,
-                            buttons: Vec::new(),
-                        });
-                    }
-                }
-            }
-        }
-        changed
-    }
-
-    /// Current spinner glyph for an in-progress update (frame 0 when idle).
-    fn update_spinner_glyph(&self) -> &'static str {
-        match self.update_spinner_start {
-            Some(t) => update_spinner_frame(t.elapsed().as_millis()),
-            None => UPDATE_SPINNER_FRAMES[0],
-        }
-    }
-
-    /// Monotonic spinner phase the main loop watches to force a redraw each
-    /// time the glyph should advance. Stays `0` whenever no update is running,
-    /// so it never wakes the renderer outside an active update.
-    fn update_spinner_phase(&self) -> u128 {
-        match self.update_spinner_start {
-            Some(t) => t.elapsed().as_millis() / UPDATE_SPINNER_FRAME_MS,
-            None => 0,
-        }
-    }
-
     /// Spinner glyph for an in-flight extension command (frame 0 when idle).
     fn mcp_spinner_glyph(&self) -> &'static str {
         match self.mcp_started {
@@ -38436,29 +37538,9 @@ impl App {
         }
     }
 
-    /// Quit into the freshly installed binary, but only once the session,
-    /// with every dirty buffer's unsaved text, is safely on disk: the
-    /// relaunch used to go ahead when the save failed (a full disk, an
-    /// unwritable cache) and those edits were gone.
-    fn arm_reexec(&mut self) {
-        // Tests arm the relaunch too, and must not write into the real cache.
-        let path = if cfg!(test) {
-            std::env::temp_dir().join(format!(
-                "croft-test-session-{}-{:?}.json",
-                std::process::id(),
-                std::thread::current().id()
-            ))
-        } else {
-            crate::session_state::handoff_path()
-        };
-        if let Err(e) = self.capture_session_state().save(&path) {
-            self.status = format!("Relaunch cancelled: could not save the session ({e:#})");
-            return;
-        }
-        self.pending_reexec = true;
-        self.quit = true;
-    }
-
+    // The self-update relaunch that produced these was removed with the
+    // update subsystem; kept so `--restore-session` still round-trips.
+    #[allow(dead_code)]
     pub fn capture_session_state(&self) -> crate::session_state::SessionState {
         let mut tabs = Vec::new();
         let mut active_tab = 0;
@@ -43604,44 +42686,6 @@ impl App {
         changed
     }
 
-    /// A click on one of the update popup's buttons (#333). Update stages
-    /// the build and leaves the popup up as a progress line; Later and
-    /// Relaunch both take it down. A click elsewhere returns false.
-    fn handle_update_toast_click(&mut self, x: u16, y: u16) -> bool {
-        let Some(toast) = self.update_toast.as_ref() else {
-            return false;
-        };
-        let Some(action) = toast
-            .buttons
-            .iter()
-            .find(|(r, _)| rect_contains(*r, x, y))
-            .map(|(_, a)| *a)
-        else {
-            return false;
-        };
-        let version = toast.version.clone();
-        match action {
-            UpdateToastAction::Update => {
-                if self.staged_install.is_none() && self.self_install.is_none() {
-                    self.start_staged_update(version);
-                }
-            }
-            UpdateToastAction::Later => {
-                self.update_toast = None;
-                self.dismiss_update_offer(&version);
-            }
-            UpdateToastAction::Relaunch => {
-                self.update_toast = None;
-                // The popup describes the staged release: only ITS
-                // readiness may fire it, never a drift rebuild's.
-                if self.staged_update_binary().is_some() {
-                    self.arm_reexec();
-                }
-            }
-        }
-        true
-    }
-
     fn show_port_toast(&mut self, port: u16, process: Option<String>) {
         self.port_toast = Some(PortToast {
             port,
@@ -48220,8 +47264,8 @@ impl App {
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
         {
-            let backward = matches!(key.code, KeyCode::BackTab)
-                || key.modifiers.contains(KeyModifiers::SHIFT);
+            let backward =
+                matches!(key.code, KeyCode::BackTab) || key.modifiers.contains(KeyModifiers::SHIFT);
             self.move_tab_picker(if backward { -1 } else { 1 });
             return;
         }
@@ -49923,8 +48967,7 @@ impl App {
         // before anything else; clicks elsewhere fall through to normal
         // handling, so the toast never blocks the rest of the UI.
         if matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
-            && (self.handle_port_toast_click(m.column, m.row)
-                || self.handle_update_toast_click(m.column, m.row))
+            && self.handle_port_toast_click(m.column, m.row)
         {
             return;
         }
@@ -55821,35 +54864,23 @@ impl App {
         // an `unlinked-file` with no hover / completion / semantic tokens.
         // Spawn a fresh manager rooted at new_root. The old one's Drop shuts
         // its servers down and waits up to 3 s for them, so it is dropped
-        // off the UI thread, as the build pause does (#737). Clearing
-        // lsp_last_seen makes the next sync_lsp() re-open every live editor tab
-        // against the new servers; the stale diagnostics / progress from the
-        // old root are dropped with it.
-        //
-        // Not while a source build of croft has the servers stopped (#694):
-        // starting them now would put rust-analyzer back beside the compile.
-        // The manager drops either way, and the end of the build starts one
-        // at the new root, since the resume reads `workspace_root()`.
+        // off the UI thread (#737). Clearing lsp_last_seen makes the next
+        // sync_lsp() re-open every live editor tab against the new servers;
+        // the stale diagnostics / progress from the old root are dropped
+        // with it.
         if let Some(old) = self.lsp.take() {
             fs_watch::offload_drop(old);
         }
-        self.lsp = match self.lsp_paused_for_build {
-            true => None,
-            false => match crate::lsp::LspManager::new(new_root.clone()) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    // Not stderr: the TUI owns the screen here, and text written
-                    // around ratatui stays on it (#537's class of leak).
-                    let msg = format!("Language servers could not restart: {e}");
-                    crate::output::push(
-                        "Language Servers",
-                        crate::output::OutputLevel::Error,
-                        &msg,
-                    );
-                    self.status = msg;
-                    None
-                }
-            },
+        self.lsp = match crate::lsp::LspManager::new(new_root.clone()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                // Not stderr: the TUI owns the screen here, and text written
+                // around ratatui stays on it (#537's class of leak).
+                let msg = format!("Language servers could not restart: {e}");
+                crate::output::push("Language Servers", crate::output::OutputLevel::Error, &msg);
+                self.status = msg;
+                None
+            }
         };
         self.lsp_last_seen.clear();
         self.lsp_diagnostics.clear();
@@ -65072,42 +64103,6 @@ pub(crate) fn croft_cache_dir() -> PathBuf {
     home.join(".cache").join("croft")
 }
 
-/// The per-process self-install log: two drift-armed croft instances on one
-/// machine must not overwrite each other's build diagnostics (#245).
-fn self_install_log_path() -> PathBuf {
-    croft_cache_dir().join(format!("self-install-{}.log", std::process::id()))
-}
-
-/// The staged release build's log (#333): its own file, since a drift
-/// rebuild may run in the same process and must not overwrite it.
-fn staged_install_log_path() -> PathBuf {
-    croft_cache_dir().join(format!("staged-install-{}.log", std::process::id()))
-}
-
-/// Resolve the binary to re-exec into after an update. A local self-install
-/// re-execs the exact path cargo reported writing (which honors an
-/// `install.root` from cargo config that env resolution can't see), falling
-/// back to cargo's env-level root (`CARGO_INSTALL_ROOT` / `CARGO_HOME` /
-/// `~/.cargo`); the remote installer always rsyncs to the literal
-/// `~/.cargo/bin/croft`. Either way the fresh file is preferred over
-/// `current_exe`, which may resolve to the now-replaced inode.
-fn reexec_binary_path(local_install: Option<&crate::update_watch::SelfInstall>) -> PathBuf {
-    let installed = if let Some(install) = local_install {
-        install
-            .installed_path()
-            .or_else(crate::update_watch::cargo_install_bin)
-    } else {
-        std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(".cargo").join("bin").join("croft"))
-    };
-    if let Some(p) = installed
-        && p.exists()
-    {
-        return p;
-    }
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("croft"))
-}
-
 /// How long a Keyboard Shortcuts prompt waits for its chord.
 const SHORTCUT_RECORD_WINDOW: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -65836,8 +64831,8 @@ pub fn run(
             app.add_workspace_folder(folder);
         }
     }
-    // Restore the tabs / layout carried across a self-update re-exec, then
-    // delete the handoff file so a later normal launch starts clean.
+    // Restore the tabs / layout from a session handoff file, then
+    // delete it so a later normal launch starts clean.
     if let Some(session_path) = restore_session.as_ref() {
         match crate::session_state::SessionState::load(session_path) {
             Ok(state) => {
@@ -65880,9 +64875,6 @@ pub fn run(
         }
         _ => {}
     }
-    app.start_update_watch_if_remote();
-    app.start_drift_probe_if_local();
-    app.start_update_check_if_local();
     // `croft pr <n>` (#365): open the review once the app is up.
     if let Some(selector) = crate::pr_review::take_startup_pr() {
         app.start_pr_review(selector);
@@ -66005,8 +64997,8 @@ pub fn run(
     terminal.show_cursor().ok();
 
     // Reap the navigator's claude child before any exit: drop-to-local
-    // (process::exit) and self-update (exec) below both bypass Drop, and even
-    // a normal return races the detached Drop thread against process exit.
+    // (process::exit) bypasses Drop, and even a normal return races the
+    // detached Drop thread against process exit.
     // shutdown_blocking reverts, hangs up, and grace-kills synchronously.
     if let Some(host) = app.pair_host.take() {
         host.shutdown_blocking();
@@ -66024,42 +65016,6 @@ pub fn run(
     result?;
     if app.drop_to_local {
         std::process::exit(crate::remote::DROP_TO_LOCAL_EXIT_CODE);
-    }
-    // A background self-update landed: serialize the session and replace
-    // this process image with the freshly-installed binary. The unix
-    // process-image swap keeps the same controlling tty (the ssh PTY), so
-    // there is no reconnect - the user sees a redraw, not a dropped
-    // session. No shell is involved; args are passed as an argv vector.
-    if app.pending_reexec {
-        let state = app.capture_session_state();
-        let session_path = crate::session_state::handoff_path();
-        // Saved once already when the relaunch was armed; this refresh is
-        // best-effort, and a failure leaves that copy in place.
-        let _ = state.save(&session_path);
-        use std::os::unix::process::CommandExt;
-        // A staged release (#333) is swapped over the installed binary
-        // only now, on the user's Relaunch: until this line PATH still
-        // held the old version.
-        let target = reexec_binary_path(app.self_install.as_ref());
-        if let Some(staged) = app.staged_update_binary()
-            && let Err(err) = crate::update_check::apply_staged(&staged, &target)
-        {
-            // The installed binary is untouched (copy-beside + rename), so
-            // relaunching it is still right: the editor must never simply
-            // exit because an update could not be applied.
-            eprintln!(
-                "croft update failed: could not replace {} with {}: {err} - relaunching the current version",
-                target.display(),
-                staged.display()
-            );
-        }
-        let mut cmd = std::process::Command::new(target);
-        cmd.arg(app.workspace_root())
-            .arg("--restore-session")
-            .arg(&session_path);
-        let err = CommandExt::exec(&mut cmd);
-        eprintln!("croft self-relaunch failed: {err}");
-        return Ok(());
     }
     if let Some(remote) = app.remote_launch.take() {
         app.fs_watch.disable();
@@ -66428,9 +65384,9 @@ fn main_loop(app: &mut App, terminal: &mut CroftTerminal) -> Result<()> {
     // before the first event arrives or any timer fires.
     let mut needs_redraw = true;
     let mut last_blink_visible = app.cursor_visible_phase();
-    // Advances every UPDATE_SPINNER_FRAME_MS while a background update runs;
+    // Advances every UPDATE_SPINNER_FRAME_MS while a background spinner runs;
     // forces a status-bar redraw so the spinner animates. Constant otherwise.
-    let mut last_spinner_phase = app.update_spinner_phase();
+    let mut last_spinner_phase = app.mcp_spinner_phase() + app.problems_fix_spinner_phase();
     // Frame-rate accounting for the F8 HUD: count draws over a rolling 1s
     // window so a high idle FPS (always-dirty redraw loop saturating the
     // SSH link) is visible at a glance.
@@ -66504,8 +65460,7 @@ fn main_loop(app: &mut App, terminal: &mut CroftTerminal) -> Result<()> {
         let blink_visible = app.cursor_visible_phase();
         let blink_changed = blink_visible != last_blink_visible;
         // Either spinner advancing must wake a redraw; both stay 0 when idle.
-        let spinner_phase =
-            app.update_spinner_phase() + app.mcp_spinner_phase() + app.problems_fix_spinner_phase();
+        let spinner_phase = app.mcp_spinner_phase() + app.problems_fix_spinner_phase();
         let spinner_changed = spinner_phase != last_spinner_phase;
         let ext_index_changed = app.drain_ext_index_refresh();
         let codeql_changed = app.drain_codeql_run()
@@ -66562,7 +65517,6 @@ fn main_loop(app: &mut App, terminal: &mut CroftTerminal) -> Result<()> {
             | app.drain_review_ops();
         let connect_changed = app.poll_connect_dialog() | app.drain_scrub_views();
         let install_changed = app.poll_install_session();
-        let update_changed = app.poll_update_watch();
         let http_changed = app.drain_http_responses();
         let reveal_changed = app.tick_redaction_reveal();
         app.sync_lsp();
@@ -66700,7 +65654,6 @@ fn main_loop(app: &mut App, terminal: &mut CroftTerminal) -> Result<()> {
             || ws_symbols_changed
             || connect_changed
             || install_changed
-            || update_changed
             || http_changed
             || reveal_changed
             || lsp_changed
