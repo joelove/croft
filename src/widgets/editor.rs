@@ -7440,10 +7440,13 @@ impl Editor {
 
     /// VS Code "Add Selection to Next Find Match" (`Cmd+D`): the first press
     /// selects the word under the cursor; each further press finds the next
-    /// occurrence of the selected text (document order, wrapping) that is not
-    /// already a caret and adds it as a secondary caret, moving the primary to
-    /// it so the view follows. Returns the number of cursors (0 when the first
-    /// press lands off a word, leaving state untouched).
+    /// occurrence of the selected text (document order, wrapping) that does
+    /// not overlap a selection already made, and adds it as a secondary caret,
+    /// moving the primary to it so the view follows. A single-word selection
+    /// matches on word boundaries; anything else (punctuation, whitespace,
+    /// partial words, multi-line text) matches literally. Returns the number
+    /// of cursors (0 when the first press lands off a word, leaving state
+    /// untouched).
     pub fn select_next_occurrence(&mut self) -> usize {
         // First press with no selection: select the word under the cursor.
         let Some(sel) = self.selection else {
@@ -7458,51 +7461,46 @@ impl Editor {
             self.ensure_cursor_col_visible();
             return 1;
         };
-        // Only single-line word selections drive the incremental match search.
         let (start, end) = sel.normalised();
-        if start.0 != end.0 {
+        if start == end {
             return self.carets.len() + 1;
         }
-        let word: Vec<char> = self.lines[start.0]
-            .chars()
-            .skip(start.1)
-            .take(end.1 - start.1)
-            .collect();
-        if word.is_empty() {
+        let needle = self.selection_text();
+        if needle.is_empty() {
             return self.carets.len() + 1;
         }
-        // Every occurrence in document order, and the set already selected
-        // (the primary plus each existing caret), keyed by its start.
-        let mut occ: Vec<(usize, usize)> = Vec::new();
         // A symbol tab matches only inside its symbol.
         let (lo, hi) = self.symbol_clip().unwrap_or((0, self.lines.len()));
-        for (row, line) in self.lines.iter().enumerate().take(hi).skip(lo) {
-            let chars: Vec<char> = line.chars().collect();
-            for col in find_word_occurrences(&chars, &word) {
-                occ.push((row, col));
-            }
+        let occ = find_selection_occurrences(&self.lines, &needle, lo, hi);
+        if occ.is_empty() {
+            return self.carets.len() + 1;
         }
-        let mut taken: Vec<(usize, usize)> = self.carets.iter().map(|c| c.normalised().0).collect();
-        taken.push(start);
-        // Scan forward from the primary, wrapping, for the first match not yet
-        // taken.
-        let from = occ.iter().position(|&o| o == start).unwrap_or(0);
+        // The primary plus every caret, by range: a candidate that overlaps
+        // any of them is skipped, so overlapping matches never stack.
+        let mut taken: Vec<EditorSelection> = self.carets.clone();
+        taken.push(sel);
+        // Scan forward from the primary and wrap once. When the current
+        // selection is not itself a whole-word occurrence, start at the first
+        // match after it rather than back at the top of the file.
         let n = occ.len();
-        let next = (1..=n)
-            .map(|k| occ[(from + k) % n])
-            .find(|o| !taken.contains(o));
-        let Some((row, col)) = next else {
+        let begin = occ
+            .iter()
+            .position(|o| o.normalised().0 == start)
+            .map_or_else(
+                || occ.partition_point(|o| o.normalised().0 <= start) % n,
+                |i| (i + 1) % n,
+            );
+        let next = (0..n)
+            .map(|k| occ[(begin + k) % n])
+            .find(|o| !taken.iter().any(|t| selections_overlap(*t, *o)));
+        let Some(candidate) = next else {
             return self.carets.len() + 1;
         };
         // Demote the current primary to a caret, promote the new match.
         self.carets.push(sel);
-        let head = (row, col + word.len());
-        self.selection = Some(EditorSelection {
-            anchor: (row, col),
-            head,
-        });
-        self.cursor_row = head.0;
-        self.cursor_col = head.1;
+        self.selection = Some(candidate);
+        self.cursor_row = candidate.head.0;
+        self.cursor_col = candidate.head.1;
         self.ensure_cursor_col_visible();
         self.carets.len() + 1
     }
@@ -11921,26 +11919,113 @@ fn matching_open(c: char) -> Option<char> {
 /// after the match is not a word char, so `foo` does not match inside
 /// `foobar`. Mirrors VS Code's "Change All Occurrences" matching.
 fn find_word_occurrences(chars: &[char], word: &[char]) -> Vec<usize> {
+    find_literal_in_line(chars, word, true)
+}
+
+/// Literal substring occurrences in one line, in column order. With
+/// `whole_word`, the character on each side must not be a word character
+/// (so a word needle never matches inside a longer identifier). Advancing
+/// past a match keeps the occurrences non-overlapping, as both Cmd+D and
+/// Cmd+F2 expect.
+fn find_literal_in_line(chars: &[char], needle: &[char], whole_word: bool) -> Vec<usize> {
     let mut out = Vec::new();
-    if word.is_empty() || word.len() > chars.len() {
+    if needle.is_empty() || needle.len() > chars.len() {
         return out;
     }
-    let last_start = chars.len() - word.len();
+    let last_start = chars.len() - needle.len();
     let mut i = 0;
     while i <= last_start {
-        if chars[i..i + word.len()] == *word {
-            let before_ok = i == 0 || !is_word_char(chars[i - 1]);
-            let after_idx = i + word.len();
-            let after_ok = after_idx >= chars.len() || !is_word_char(chars[after_idx]);
+        if chars[i..i + needle.len()] == *needle {
+            let before_ok = !whole_word || i == 0 || !is_word_char(chars[i - 1]);
+            let after_idx = i + needle.len();
+            let after_ok =
+                !whole_word || after_idx >= chars.len() || !is_word_char(chars[after_idx]);
             if before_ok && after_ok {
                 out.push(i);
-                i += word.len();
+                i += needle.len();
                 continue;
             }
         }
         i += 1;
     }
     out
+}
+
+/// Every occurrence of `needle` in `lines[lo..hi]` in document order, as
+/// selections. A single-word needle gets whole-word boundaries (`fn` does not
+/// match inside `fnord`); punctuation, whitespace, partial words and
+/// multi-line text are matched literally, the way VS Code's Add Selection to
+/// Next Find Match treats a non-word selection.
+fn find_selection_occurrences(
+    lines: &[String],
+    needle: &str,
+    lo: usize,
+    hi: usize,
+) -> Vec<EditorSelection> {
+    let hi = hi.min(lines.len());
+    let lo = lo.min(hi);
+    if needle.is_empty() || lo >= hi {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if !needle.contains('\n') {
+        let needle_chars: Vec<char> = needle.chars().collect();
+        let whole_word = needle_chars.iter().all(|c| is_word_char(*c));
+        for row in lo..hi {
+            let chars: Vec<char> = lines[row].chars().collect();
+            for col in find_literal_in_line(&chars, &needle_chars, whole_word) {
+                out.push(EditorSelection {
+                    anchor: (row, col),
+                    head: (row, col + needle_chars.len()),
+                });
+            }
+        }
+        return out;
+    }
+    // A selection that crosses a newline starts mid-line and runs to the end
+    // of that line, then ends at the start of a later one. Match the first
+    // needle line as a suffix, the middle lines exactly, and the last as a
+    // prefix.
+    let needle_lines: Vec<&str> = needle.split('\n').collect();
+    let rows = needle_lines.len();
+    if rows < 2 {
+        return out;
+    }
+    let first: Vec<char> = needle_lines[0].chars().collect();
+    let last: Vec<char> = needle_lines[rows - 1].chars().collect();
+    for start in lo..hi {
+        if start + rows > hi {
+            break;
+        }
+        let first_line: Vec<char> = lines[start].chars().collect();
+        if first_line.len() < first.len() {
+            continue;
+        }
+        let start_col = first_line.len() - first.len();
+        if first_line[start_col..] != first[..] {
+            continue;
+        }
+        if (1..rows - 1).any(|m| lines[start + m] != needle_lines[m]) {
+            continue;
+        }
+        let last_line: Vec<char> = lines[start + rows - 1].chars().collect();
+        if last_line.len() < last.len() || last_line[..last.len()] != last[..] {
+            continue;
+        }
+        out.push(EditorSelection {
+            anchor: (start, start_col),
+            head: (start + rows - 1, last.len()),
+        });
+    }
+    out
+}
+
+/// True when two selections touch or overlap. Both are normalised first, so
+/// the caller can pass live `EditorSelection` values unchanged.
+fn selections_overlap(a: EditorSelection, b: EditorSelection) -> bool {
+    let (a_start, a_end) = a.normalised();
+    let (b_start, b_end) = b.normalised();
+    a_start < b_end && b_start < a_end
 }
 
 /// The line-comment marker for a language (VS Code `lineComment`), or `None`
@@ -27400,6 +27485,97 @@ mod tests {
         assert_eq!(e.select_next_occurrence(), 3);
         // Every "foo" is now selected: another press wraps and adds nothing.
         assert_eq!(e.select_next_occurrence(), 3);
+    }
+
+    #[test]
+    fn select_next_occurrence_matches_punctuation_literally() {
+        // A `;` is not a word, but Cmd+D must still walk every `;` in document
+        // order instead of bailing or jumping to the top of the file.
+        let mut e = editor_with("a;\nb;\nc;\nd;");
+        e.cursor_row = 1;
+        e.cursor_col = 1;
+        e.selection = Some(EditorSelection {
+            anchor: (1, 1),
+            head: (1, 2),
+        });
+        assert_eq!(e.select_next_occurrence(), 2);
+        assert_eq!(e.selection.unwrap().normalised(), ((2, 1), (2, 2)));
+        assert_eq!(e.select_next_occurrence(), 3);
+        assert_eq!(e.selection.unwrap().normalised(), ((3, 1), (3, 2)));
+        // The next match is above the cursor: one wrap, then it stops.
+        assert_eq!(e.select_next_occurrence(), 4);
+        assert_eq!(e.selection.unwrap().normalised(), ((0, 1), (0, 2)));
+        assert_eq!(e.select_next_occurrence(), 4, "every `;` is taken");
+    }
+
+    #[test]
+    fn select_next_occurrence_selection_inside_a_larger_word_matches_whole_words() {
+        // A selection made of word characters is treated as a word even when
+        // it was carved out of a larger identifier: `foo` inside `foobar`
+        // matches only the standalone `foo`, and the scan starts after the
+        // selection instead of jumping back to the top of the file.
+        let mut e = editor_with("foobar foo");
+        e.selection = Some(EditorSelection {
+            anchor: (0, 0),
+            head: (0, 3),
+        });
+        assert_eq!(e.select_next_occurrence(), 2);
+        assert_eq!(e.selection.unwrap().normalised(), ((0, 7), (0, 10)));
+        assert_eq!(e.select_next_occurrence(), 2);
+    }
+
+    #[test]
+    fn select_next_occurrence_matches_selection_with_trailing_space() {
+        // Whole-word boundary checks used to make a needle ending in a space
+        // unmatchable; literal matching fixes that.
+        let mut e = editor_with("foo \nbar\nfoo \nbaz");
+        e.selection = Some(EditorSelection {
+            anchor: (0, 0),
+            head: (0, 4),
+        });
+        assert_eq!(e.select_next_occurrence(), 2);
+        assert_eq!(e.selection.unwrap().normalised(), ((2, 0), (2, 4)));
+        assert_eq!(e.select_next_occurrence(), 2);
+    }
+
+    #[test]
+    fn select_next_occurrence_matches_multiline_selection() {
+        // The whole selected block, newlines included, is the needle.
+        let mut e = editor_with("a\nb\nc\na\nb\nc");
+        e.selection = Some(EditorSelection {
+            anchor: (0, 0),
+            head: (2, 1),
+        });
+        assert_eq!(e.select_next_occurrence(), 2);
+        assert_eq!(e.selection.unwrap().normalised(), ((3, 0), (5, 1)));
+        assert_eq!(e.select_next_occurrence(), 2);
+    }
+
+    #[test]
+    fn select_next_occurrence_skips_overlapping_carets() {
+        // A candidate that overlaps an existing caret is passed over.
+        let mut e = editor_with("foo foo foo");
+        e.selection = Some(EditorSelection {
+            anchor: (0, 0),
+            head: (0, 3),
+        });
+        e.carets.push(EditorSelection {
+            anchor: (0, 4),
+            head: (0, 7),
+        });
+        assert_eq!(e.select_next_occurrence(), 3);
+        assert_eq!(e.selection.unwrap().normalised(), ((0, 8), (0, 11)));
+    }
+
+    #[test]
+    fn select_next_occurrence_word_stays_whole_word() {
+        let mut e = editor_with("fn fnord fn");
+        e.cursor_row = 0;
+        e.cursor_col = 0;
+        assert_eq!(e.select_next_occurrence(), 1);
+        assert_eq!(e.select_next_occurrence(), 2);
+        assert_eq!(e.selection.unwrap().normalised(), ((0, 9), (0, 11)));
+        assert_eq!(e.select_next_occurrence(), 2, "`fnord` is not a match");
     }
 
     #[test]

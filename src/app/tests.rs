@@ -15258,11 +15258,11 @@ fn editor_ctrl_u_kills_to_start_of_line() {
 }
 
 #[test]
-fn editor_cmd_o_opens_line_below_with_indent() {
+fn editor_cmd_enter_opens_line_below_with_indent() {
     let mut app = editor_app_with_lines(&["    foo", "bar"]);
     app.editor.cursor_row = 0;
     app.editor.cursor_col = 4;
-    app.handle_key(key(KeyCode::Char('o'), KeyModifiers::SUPER))
+    app.handle_key(key(KeyCode::Enter, KeyModifiers::SUPER))
         .unwrap();
     assert_eq!(app.editor.lines, vec!["    foo", "    ", "bar"]);
     assert_eq!((app.editor.cursor_row, app.editor.cursor_col), (1, 4));

@@ -55,6 +55,7 @@ const CHORDS: &[(&str, &str)] = &[
     ("cmd+alt+m", pl::CMD_OPT_M_HEX),
     ("cmd+alt+f", pl::CMD_OPT_F_HEX),
     ("cmd+alt+enter", pl::CMD_OPT_ENTER_HEX),
+    ("cmd+enter", pl::CMD_ENTER_HEX),
     ("cmd+/", pl::CMD_SLASH_HEX),
     ("cmd+.", pl::CMD_DOT_HEX),
     ("cmd+shift+/", pl::CMD_SHIFT_SLASH_HEX),
@@ -70,7 +71,6 @@ const CHORDS: &[(&str, &str)] = &[
     ("cmd+g", pl::CMD_G_HEX),
     ("cmd+k", pl::CMD_K_HEX),
     ("cmd+y", pl::CMD_Y_HEX),
-    ("cmd+o", pl::CMD_O_HEX),
     ("cmd+e", pl::CMD_E_HEX),
     ("cmd+p", pl::CMD_P_HEX),
     ("cmd+w", pl::CMD_W_HEX),
@@ -166,17 +166,22 @@ pub(crate) fn render_keybind_block_with(keymap: &crate::keymap::Keymap) -> Strin
         ));
     }
     // User keybindings: forward each reserved-Cmd chord via the same CSI-u
-    // payload iTerm2 sends, so a rebind reaches croft under Ghostty too.
-    for chord in keymap.chords() {
-        if let (Some(trigger), Some((_key, hex))) =
-            (chord.ghostty_trigger(), chord.iterm2_forwarder())
-        {
-            lines.push(format!(
+    // payload iTerm2 sends, so a rebind reaches croft under Ghostty too. The
+    // keymap is a HashMap, so sort the rendered lines to keep the managed
+    // block byte-stable across runs (the merge is compared and diffed).
+    let mut user_lines: Vec<String> = keymap
+        .chords()
+        .into_iter()
+        .filter_map(|chord| {
+            let (trigger, (_key, hex)) = (chord.ghostty_trigger()?, chord.iterm2_forwarder()?);
+            Some(format!(
                 "{KEYBIND_PREFIX}{trigger}={CSI_ACTION}{}",
                 csi_body(&hex)
-            ));
-        }
-    }
+            ))
+        })
+        .collect();
+    user_lines.sort();
+    lines.extend(user_lines);
     lines.push(BLOCK_END.to_string());
     lines.join("\n")
 }

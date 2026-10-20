@@ -63762,11 +63762,11 @@ fn is_editor_kill_to_bol_key(key: KeyEvent) -> bool {
         && !key.modifiers.contains(KeyModifiers::ALT)
 }
 
+/// Insert line below: `Cmd+Enter` (macOS) / `Ctrl+Enter` (Linux), matching VS
+/// Code's `editor.action.insertLineAfter`. (Previously bound to `Cmd+O`, a
+/// croft-specific chord; `Cmd+O` is now the dev-workspace open-file picker.)
 fn is_editor_open_line_below_key(key: KeyEvent) -> bool {
-    let KeyCode::Char(c) = key.code else {
-        return false;
-    };
-    if c != 'o' {
+    if !matches!(key.code, KeyCode::Enter) {
         return false;
     }
     if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT) {

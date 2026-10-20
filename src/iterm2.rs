@@ -120,8 +120,11 @@ const CLEAR_BUFFER_MENU_KEY: &str = "Clear Buffer";
 const CLEAR_BUFFER_MENU_EQUIV: &str = "@~k";
 const CMD_Y_KEY: &str = "0x79-0x100000-0x10";
 const CMD_Y_HEX: &str = "0x1b 0x5b 0x31 0x32 0x31 0x3b 0x39 0x75";
-const CMD_O_KEY: &str = "0x6f-0x100000-0x1f";
-const CMD_O_HEX: &str = "0x1b 0x5b 0x31 0x31 0x31 0x3b 0x39 0x75";
+/// `Cmd+Return` -> insert line below (VS Code's insertLineAfter). Return
+/// reports character 0xd, mask 0x100000 (Cmd), `kVK_Return` = 0x24. CSI-u
+/// `ESC [ 13 ; 9 u` (modbyte 9 = 1 + Super(8)) decodes to `Enter + SUPER`.
+const CMD_ENTER_KEY: &str = "0xd-0x100000-0x24";
+const CMD_ENTER_HEX: &str = "0x1b 0x5b 0x31 0x33 0x3b 0x39 0x75";
 /// `Cmd+E` — toggle native modal (vim) editing in the editor pane (croft's
 /// `is_vim_toggle_key`). iTerm2 inherits AppKit's standard Edit > Find
 /// submenu, which binds the bare chord to "Use Selection for Find"; the
@@ -532,7 +535,7 @@ pub(crate) mod payloads {
     pub(crate) const CMD_G_HEX: &str = super::CMD_G_HEX;
     pub(crate) const CMD_K_HEX: &str = super::CMD_K_HEX;
     pub(crate) const CMD_LBRACKET_HEX: &str = super::CMD_LBRACKET_HEX;
-    pub(crate) const CMD_O_HEX: &str = super::CMD_O_HEX;
+    pub(crate) const CMD_ENTER_HEX: &str = super::CMD_ENTER_HEX;
     pub(crate) const CMD_OPT_LEFT_HEX: &str = super::CMD_OPT_LEFT_HEX;
     pub(crate) const CMD_OPT_R_HEX: &str = super::CMD_OPT_R_HEX;
     pub(crate) const CMD_OPT_C_HEX: &str = super::CMD_OPT_C_HEX;
@@ -806,7 +809,7 @@ pub fn apply_croft_key_settings(plist: &mut Value) -> Result<(), ITerm2Error> {
         (CMD_G_KEY, CMD_G_HEX),
         (CMD_K_KEY, CMD_K_HEX),
         (CMD_Y_KEY, CMD_Y_HEX),
-        (CMD_O_KEY, CMD_O_HEX),
+        (CMD_ENTER_KEY, CMD_ENTER_HEX),
         (CMD_E_KEY, CMD_E_HEX),
         (CMD_P_KEY, CMD_P_HEX),
         (CMD_W_KEY, CMD_W_HEX),
@@ -1535,7 +1538,7 @@ mod tests {
             (CMD_D_KEY, CMD_D_HEX, "Cmd+D (vim dd chord start)"),
             (CMD_G_KEY, CMD_G_HEX, "Cmd+G (vim gg chord start)"),
             (CMD_Y_KEY, CMD_Y_HEX, "Cmd+Y (vim yy chord start)"),
-            (CMD_O_KEY, CMD_O_HEX, "Cmd+O (open line below)"),
+            (CMD_ENTER_KEY, CMD_ENTER_HEX, "Cmd+Enter (open line below)"),
             (
                 CMD_SHIFT_G_KEY,
                 CMD_SHIFT_G_HEX,
