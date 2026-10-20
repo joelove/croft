@@ -6291,11 +6291,9 @@ fn revert_hunk_confirm_cancels_on_n() {
 }
 
 #[test]
-fn welcome_panel_does_not_paint_the_blazingly_fast_slogan_footer() {
-    // The user asked to drop the chevron-bracketed
-    // "Blazingly fast by design. Secure by default. Loved by developers."
-    // line. Render the welcome panel into a buffer and confirm none
-    // of the slogan fragments appear anywhere on the canvas.
+fn welcome_screen_renders_completely_blank() {
+    // The start screen carries no wordmark, version badge or tagline; only the
+    // editor background fill. Render it and confirm every cell stays blank.
     let tmp = tempfile::tempdir().unwrap();
     let mut app = App::new(tmp.path().to_path_buf()).unwrap();
     let area = Rect {
@@ -6309,18 +6307,11 @@ fn welcome_panel_does_not_paint_the_blazingly_fast_slogan_footer() {
     term.draw(|f| app.render_welcome(f, area)).unwrap();
     let buffer = term.backend().buffer();
     for y in 0..area.height {
-        let mut row = String::new();
         for x in 0..area.width {
-            row.push_str(buffer[(x, y)].symbol());
-        }
-        for needle in [
-            "Blazingly fast by design",
-            "Secure by default",
-            "Loved by developers",
-        ] {
-            assert!(
-                !row.contains(needle),
-                "welcome row {y} still carries removed slogan {needle:?}: {row:?}"
+            assert_eq!(
+                buffer[(x, y)].symbol(),
+                " ",
+                "welcome cell ({x}, {y}) is not blank"
             );
         }
     }
@@ -6386,13 +6377,6 @@ fn paint_gradient_box_draws_rounded_corners_with_a_flat_light_blue_outline() {
     assert_eq!(tl_fg, rgb_color(OUTLINE));
     let tr_fg = buf[(7, 0)].fg;
     assert_eq!(tr_fg, rgb_color(OUTLINE));
-}
-
-#[test]
-fn welcome_tagline_constant_is_present() {
-    assert!(WELCOME_TAGLINE.contains("LIGHTWEIGHT"));
-    assert!(WELCOME_TAGLINE.contains("BLAZINGLY FAST"));
-    assert!(WELCOME_TAGLINE.contains("DEVELOPERS"));
 }
 
 #[test]
@@ -19273,70 +19257,6 @@ fn a_stale_commit_graph_scrollbar_rect_cannot_deaden_the_splitter() {
 }
 
 #[test]
-fn welcome_paints_a_full_bordered_box_around_the_editor_area() {
-    // Without a visible envelope, users on the welcome page can't
-    // perceive that the explorer is resizable and can't see where the
-    // editor pane ends. Regression guard: the welcome render must
-    // paint a full Borders::ALL frame around `area` so all four edges
-    // are perceptible.
-    let tmp = tempfile::tempdir().unwrap();
-    let mut app = App::new(tmp.path().to_path_buf()).unwrap();
-    let backend = ratatui::backend::TestBackend::new(120, 40);
-    let mut term = ratatui::Terminal::new(backend).unwrap();
-    let area = ratatui::layout::Rect::new(40, 0, 80, 40);
-    term.draw(|f| app.render_welcome(f, area)).unwrap();
-    let buf = term.backend().buffer();
-    let left = area.x;
-    let right = area.x + area.width - 1;
-    let top = area.y;
-    let bot = area.y + area.height - 1;
-    // Vertical edges: left and right columns must be vertical bars on
-    // most rows (corners use ─/└/┌/┘).
-    let mut left_bars = 0;
-    let mut right_bars = 0;
-    for y in (top + 1)..bot {
-        if buf[(left, y)].symbol() == "│" {
-            left_bars += 1;
-        }
-        if buf[(right, y)].symbol() == "│" {
-            right_bars += 1;
-        }
-    }
-    let inner_h = (bot - top - 1) as usize;
-    assert!(
-        left_bars >= inner_h / 2,
-        "left edge underpainted: {left_bars}"
-    );
-    assert!(
-        right_bars >= inner_h / 2,
-        "right edge underpainted: {right_bars}"
-    );
-    // Horizontal edges: top and bottom rows must be horizontal bars on
-    // most columns.
-    let mut top_bars = 0;
-    let mut bot_bars = 0;
-    for x in (left + 1)..right {
-        if buf[(x, top)].symbol() == "─" {
-            top_bars += 1;
-        }
-        if buf[(x, bot)].symbol() == "─" {
-            bot_bars += 1;
-        }
-    }
-    let inner_w = (right - left - 1) as usize;
-    assert!(top_bars >= inner_w / 2, "top edge underpainted: {top_bars}");
-    assert!(
-        bot_bars >= inner_w / 2,
-        "bottom edge underpainted: {bot_bars}"
-    );
-    // Corners.
-    assert_eq!(buf[(left, top)].symbol(), "┌");
-    assert_eq!(buf[(right, top)].symbol(), "┐");
-    assert_eq!(buf[(left, bot)].symbol(), "└");
-    assert_eq!(buf[(right, bot)].symbol(), "┘");
-}
-
-#[test]
 fn sidebar_drag_clamps_to_minimum() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = App::new(tmp.path().to_path_buf()).unwrap();
@@ -19411,6 +19331,16 @@ fn fresh_app_has_one_active_terminal() {
     let app = App::new(tmp.path().to_path_buf()).unwrap();
     assert_eq!(app.terminals.len(), 1);
     assert_eq!(app.active_terminal, 0);
+}
+
+#[test]
+fn fresh_app_opens_the_filetree_at_the_wide_default() {
+    // The default side bar is deliberately wide so a fresh croft in an empty
+    // tmux has room for the filetree without a drag; restored session state
+    // still overrides it with the user's own width.
+    let tmp = tempfile::tempdir().unwrap();
+    let app = App::new(tmp.path().to_path_buf()).unwrap();
+    assert_eq!(app.sidebar_width, 64);
 }
 
 #[test]
@@ -54216,8 +54146,9 @@ fn walking_the_whole_tour_ends_it_and_cleans_up() {
 }
 
 #[test]
-fn the_welcome_tour_button_starts_the_tour_and_goes_away_once_done() {
-    // #377: shown until the first completed or skipped tour, persisted.
+fn skipping_the_tour_persists_tour_done() {
+    // #377: the tour starts from the command palette, and a skipped tour is
+    // remembered so it is not offered again.
     let _guard = relay_test_lock().lock().unwrap_or_else(|e| e.into_inner());
     let home = tempfile::tempdir().unwrap();
     with_relay_home(home.path(), || {
@@ -54225,12 +54156,8 @@ fn the_welcome_tour_button_starts_the_tour_and_goes_away_once_done() {
         let mut app = App::new(tmp.path().to_path_buf()).unwrap();
         app.config_dir = tmp.path().join("config");
         app.tour_done = false;
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40)).unwrap();
-        term.draw(|f| app.render(f)).unwrap();
-        let button = app.welcome_tour_button;
-        assert!(button.width > 0, "the welcome panel offers the tour");
-        left_click(&mut app, button.x + 1, button.y);
-        assert!(app.tour.is_some(), "clicking starts it: {}", app.status);
+        app.start_demo();
+        assert!(app.tour.is_some(), "the palette entry starts the tour");
         app.close_all_modals_for_test();
         app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
             .unwrap();
@@ -54238,16 +54165,8 @@ fn the_welcome_tour_button_starts_the_tour_and_goes_away_once_done() {
         let saved = crate::prefs::Prefs::load(&tmp.path().join("config").join("config.json"))
             .unwrap_or_default();
         assert!(saved.tour_done, "persisted in prefs");
-        // Back on the welcome screen, the button is gone.
-        while app.editor.tab_count() > 1 {
-            app.editor.close_active();
-        }
-        app.editor.close_active();
-        term.draw(|f| app.render(f)).unwrap();
-        assert_eq!(app.welcome_tour_button.width, 0, "not offered again");
     });
 }
-
 #[test]
 fn take_the_tour_is_a_palette_command() {
     use crate::widgets::command_palette::Command;

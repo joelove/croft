@@ -4795,7 +4795,7 @@ const EDITOR_SPLIT_MIN: u16 = 10;
 /// Maximum pinned sticky-scroll header rows (VS Code's default is 5).
 const STICKY_SCROLL_MAX: usize = 5;
 
-const SIDEBAR_WIDTH_DEFAULT: u16 = 32;
+const SIDEBAR_WIDTH_DEFAULT: u16 = 64;
 const SIDEBAR_WIDTH_MIN: u16 = 12;
 const TERMINAL_HEIGHT_MIN: u16 = 3;
 const EDITOR_HEIGHT_MIN: u16 = 3;
@@ -4950,8 +4950,6 @@ fn wrap_cells_variable_width(text: &str, first_width: u16, rest_width: u16) -> V
         lines
     }
 }
-
-const WELCOME_TAGLINE: &str = "LIGHTWEIGHT.  BLAZINGLY FAST.  BUILT FOR DEVELOPERS.";
 
 use crate::gradient::{GRAD_TL, POPUP_SEL_BG, paint_gradient_box, rgb_color};
 
@@ -13972,240 +13970,23 @@ impl App {
         self.overlays.welcome.consume_clear_or(opened_file)
     }
 
+    /// Blank welcome: fill the editor pane with its background so it matches
+    /// the editor envelope, and draw nothing else. The wordmark, version badge
+    /// and tagline are gone (#282 follow-up); the first-launch tour stays
+    /// reachable from the command palette (`Help: Take the Tour`).
     fn render_welcome(&mut self, frame: &mut ratatui::Frame, outer_area: Rect) {
+        self.welcome_tour_button = Rect::default();
         if outer_area.width == 0 || outer_area.height == 0 {
             return;
         }
-        self.render_welcome_panel(frame, outer_area);
-        // The first-launch tour (#377), until it has been taken or skipped.
-        if !self.tour_done && self.tour.is_none() && outer_area.height > 6 {
-            let label = " Take the Tour ";
-            let w = label.chars().count() as u16;
-            if outer_area.width > w + 4 {
-                let rect = Rect {
-                    x: outer_area.x + (outer_area.width - w) / 2,
-                    y: outer_area.y + outer_area.height - 3,
-                    width: w,
-                    height: 1,
-                };
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new(label).style(
-                        Style::default()
-                            .fg(self.theme.accent_contrast_fg())
-                            .bg(self.theme.accent())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    rect,
-                );
-                self.welcome_tour_button = rect;
-            }
-        }
-    }
-
-    fn render_welcome_panel(&mut self, frame: &mut ratatui::Frame, outer_area: Rect) {
-        // In iTerm2 image mode we let the iTerm session bg (forced to
-        // sRGB(EDITOR_BG_RGB) by `SetColors=bg=srgb:…` at startup) show
-        // through the welcome cells via SGR 49 (default bg). The OSC-1337
-        // PNG canvas is filled with the same sRGB hex, so both surfaces
-        // display the same physical pixel — no Generic-RGB vs sRGB seam.
-        // Outside iTerm we fall back to explicit truecolor since there's
-        // no PNG to match against.
+        // In iTerm2 inline mode the session bg is forced to the editor bg, so
+        // resetting here keeps the pane seamless; elsewhere paint it directly.
         let bg = if crate::iterm2_inline::detect_iterm2_inline_support() {
             Style::default().bg(Color::Reset)
         } else {
             Style::default().bg(self.theme.editor_bg())
         };
-        // Paint a full bordered box around the welcome area so the editor
-        // pane has the same visible envelope as when a file is open
-        // (Borders::ALL on the editor widget). Without this, the welcome
-        // bg bleeds into the tree, the terminal, and the window edge with
-        // no perceptible seam — and the sidebar splitter looks
-        // unreachable. The bg style is applied to the same block so the
-        // inside is filled in one pass. The welcome content then renders
-        // into `block.inner(outer_area)` so a tall recents list can never
-        // paint over the border rows.
-        // Borderless welcome (croft-tmux-monokai patch): fill the pane but draw
-        // no box outline; every croft pane is borderless now.
-        let outer_block = ratatui::widgets::Block::default().style(bg);
-        let area = outer_area;
-        frame.render_widget(outer_block, outer_area);
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        // Layout-control icons at the welcome screen's top-right, inside the
-        // border row — same controls as the editor tab strip (placement A).
-        let icon_row = Rect {
-            x: outer_area.x,
-            y: outer_area.y,
-            width: outer_area.width,
-            height: 1,
-        };
-        self.paint_layout_icons(frame, icon_row);
-
-        // Layout regions, top-to-bottom:
-        //   [logo + version badge]
-        //   [tagline]
-        //   [gradient box: header + release highlights]
-        //   [footer chevron line]
-        let tagline_h = 1u16;
-        // Gaps: blank row after the logo, then after the tagline.
-        let gaps_h = 2u16;
-
-        let logo_max_w = (area.width as u32).saturating_sub(4) as u16;
-        let logo_w_cells = logo_max_w.clamp(8, 48);
-        // Give the logo whatever height remains after the tagline and gaps,
-        // capped to its 4..14 band so the stack can never overrun the
-        // fixed-size ratatui buffer.
-        let logo_h_cells = area.height.saturating_sub(tagline_h + gaps_h).clamp(4, 14);
-        let total_h = logo_h_cells + 1 + tagline_h;
-        let block_top = area.y + area.height.saturating_sub(total_h) / 2;
-        let logo_x = area.x + area.width.saturating_sub(logo_w_cells) / 2;
-        let logo_y = block_top;
-        let area_max_y = area.y + area.height;
-
-        let desired = WelcomeLayout {
-            cell_x: logo_x,
-            cell_y: logo_y,
-            cell_w: logo_w_cells,
-            cell_h: logo_h_cells,
-        };
-
-        // Re-bake the OSC-1337 image whenever the layout shifts (resize,
-        // sidebar toggle, font size change). The canvas is filled with the
-        // raw `EDITOR_BG_RGB` bytes interpreted as sRGB (iTerm2 decodes
-        // PNG bytes as sRGB by default). The pane's SGR-painted cells use
-        // `Color::Reset` so they fall back to the iTerm session bg, which
-        // we force to the same sRGB hex via `SetColors=bg=srgb:…` at
-        // startup. Both surfaces therefore display the same physical
-        // pixel pair-for-pair.
-        if !self.overlays.welcome.layout_matches(&desired) {
-            self.overlays.welcome.request_clear_if_displayed();
-            if let Some((cw, ch)) = self.cell_pixel {
-                let canvas_w = (logo_w_cells as u32) * cw;
-                let canvas_h = (logo_h_cells as u32) * ch;
-                let bg = self.theme_bg_pixel();
-                let protocol = self.inline_protocol;
-                // On a light background the asset's white "cr"/"ft"
-                // letters would vanish; the ink recolor turns just those
-                // pixels dark while the orange/teal strokes pass through.
-                let ink = self.theme.is_light().then_some((0x3b_u8, 0x3b_u8, 0x3b_u8));
-                if let Ok(baked) = crate::iterm2_inline::fit_image_with_ink(
-                    crate::iterm2_inline::WELCOME_LOGO_PNG,
-                    canvas_w,
-                    canvas_h,
-                    bg,
-                    ink,
-                ) && let Some(raw) = crate::iterm2_inline::build_inline_image(
-                    protocol,
-                    &baked,
-                    logo_w_cells,
-                    logo_h_cells,
-                    false,
-                    crate::iterm2_inline::KITTY_ID_WELCOME,
-                ) {
-                    let osc = crate::iterm2_inline::maybe_tmux_wrap(
-                        protocol,
-                        crate::iterm2_inline::detect_tmux(),
-                        raw,
-                    );
-                    self.overlays.welcome.set_image(osc);
-                }
-            }
-            self.overlays.welcome.set_layout(desired);
-            self.overlays.welcome.mark_dirty();
-        }
-
-        if !self.overlays.welcome.has_image() {
-            // Text fallback for non-iTerm2 terminals.
-            let label = " croft ";
-            let lx = logo_x
-                .saturating_add(logo_w_cells.saturating_sub(label.chars().count() as u16) / 2);
-            let ly = logo_y + logo_h_cells / 2;
-            frame.buffer_mut().set_string(
-                lx,
-                ly,
-                label,
-                Style::default()
-                    .fg(self.theme.ui(Color::Rgb(0x9d, 0xa5, 0xb4)))
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-
-        // Version badge to the right of the wordmark (the wordmark sits
-        // in the lower portion of the logo PNG; the badge tracks that row).
-        // Plain `vX.Y.Z` (#282). The hash told two builds of one version
-        // apart; the drift banner already does that, with an actionable
-        // message, at the moment it matters.
-        let version_label = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-        let version_w = version_label.chars().count() as u16;
-        let badge_x = logo_x + logo_w_cells + 1;
-        let badge_y = logo_y + (logo_h_cells * 5) / 6;
-        if badge_x + version_w + 2 <= area.x + area.width && badge_y + 2 < area_max_y {
-            let badge_style = Style::default()
-                .fg(self.theme.ui(rgb_color(GRAD_TL)))
-                .add_modifier(Modifier::BOLD);
-            frame
-                .buffer_mut()
-                .set_string(badge_x, badge_y, "\u{256d}", badge_style);
-            for i in 0..version_w {
-                frame
-                    .buffer_mut()
-                    .set_string(badge_x + 1 + i, badge_y, "\u{2500}", badge_style);
-            }
-            frame.buffer_mut().set_string(
-                badge_x + 1 + version_w,
-                badge_y,
-                "\u{256e}",
-                badge_style,
-            );
-            frame
-                .buffer_mut()
-                .set_string(badge_x, badge_y + 1, "\u{2502}", badge_style);
-            frame.buffer_mut().set_string(
-                badge_x + 1,
-                badge_y + 1,
-                &version_label,
-                Style::default()
-                    .fg(self.theme.ui(Color::White))
-                    .add_modifier(Modifier::BOLD),
-            );
-            frame.buffer_mut().set_string(
-                badge_x + 1 + version_w,
-                badge_y + 1,
-                "\u{2502}",
-                badge_style,
-            );
-            frame
-                .buffer_mut()
-                .set_string(badge_x, badge_y + 2, "\u{2570}", badge_style);
-            for i in 0..version_w {
-                frame.buffer_mut().set_string(
-                    badge_x + 1 + i,
-                    badge_y + 2,
-                    "\u{2500}",
-                    badge_style,
-                );
-            }
-            frame.buffer_mut().set_string(
-                badge_x + 1 + version_w,
-                badge_y + 2,
-                "\u{256f}",
-                badge_style,
-            );
-        }
-
-        // Tagline.
-        let tagline_y = logo_y + logo_h_cells + 1;
-        let tagline_w = WELCOME_TAGLINE.chars().count() as u16;
-        let tagline_x = area.x + area.width.saturating_sub(tagline_w) / 2;
-        if tagline_y < area_max_y && tagline_w <= area.width {
-            frame.buffer_mut().set_string(
-                tagline_x,
-                tagline_y,
-                WELCOME_TAGLINE,
-                Style::default().fg(self.theme.ui(Color::Rgb(0x88, 0xc0, 0xd0))),
-            );
-        }
+        frame.render_widget(ratatui::widgets::Block::default().style(bg), outer_area);
     }
 
     /// Render the secondary side bar (VS Code's auxiliary bar): the active

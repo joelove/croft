@@ -39,6 +39,7 @@ pub const LAYOUT_CUSTOMIZE_SRC_SVG: &[u8] = include_bytes!("../assets/icons/layo
 /// Still drives the Run and Debug panel's headline illustration (composed via
 /// the PNG path); the activity-bar icon now rasterises the SVG directly.
 pub const RUN_DEBUG_SRC_PNG: &[u8] = include_bytes!("../assets/icons/run_debug_src.png");
+#[allow(dead_code)] // Inert since the blank welcome; kept for the logo bake tests.
 pub const WELCOME_LOGO_PNG: &[u8] = include_bytes!("../assets/logo-tight-removebg-preview.png");
 /// Square (1254x1254) croft logo, used as the source for the macOS launcher
 /// app-bundle icon (`croft install-launcher` rasterises it into an `.icns`).
@@ -639,6 +640,7 @@ pub fn fit_image(
 /// wordmark's "cr" / "ft" letters) stays legible on a white canvas. Colored
 /// strokes (the logo's orange and teal) pass through untouched. `None`
 /// bakes exactly like [`fit_image`].
+#[allow(dead_code)] // Inert since the blank welcome; kept for the logo bake tests.
 pub fn fit_image_with_ink(
     src_png: &[u8],
     canvas_w_px: u32,
@@ -1026,6 +1028,7 @@ pub const KITTY_ID_SETTINGS: u32 = KITTY_ID_BASE + 6;
 pub const KITTY_ID_RUN_DEBUG_PANEL: u32 = KITTY_ID_BASE + 8;
 pub const KITTY_ID_HERO: u32 = KITTY_ID_BASE + 9;
 pub const KITTY_ID_SSH: u32 = KITTY_ID_BASE + 10;
+#[allow(dead_code)] // Inert since the blank welcome; kept for the logo bake tests.
 pub const KITTY_ID_WELCOME: u32 = KITTY_ID_BASE + 11;
 /// Editor image slots, indexed by physical split side (`+0` left, `+1` right),
 /// so they occupy `+12` and `+13`.
